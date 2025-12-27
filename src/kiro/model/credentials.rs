@@ -36,17 +36,6 @@ pub struct KiroCredentials {
 }
 
 impl KiroCredentials {
-    /// 创建新的凭证实例，使用默认值
-    pub fn new() -> Self {
-        Self {
-            access_token: None,
-            refresh_token: None,
-            profile_arn: None,
-            expires_at: None,
-            auth_method: Some("social".to_string()),
-            provider: Some("Google".to_string()),
-        }
-    }
 
     /// 获取默认凭证文件路径
     pub fn default_credentials_path() -> &'static str {
@@ -68,11 +57,6 @@ impl KiroCredentials {
         Ok(credentials)
     }
 
-    /// 从默认路径加载凭证
-    pub fn load_default() -> anyhow::Result<Self> {
-        Self::load(Self::default_credentials_path())
-    }
-
     /// 序列化为 JSON 字符串
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(self)
@@ -87,13 +71,6 @@ impl KiroCredentials {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_new_credentials() {
-        let creds = KiroCredentials::new();
-        assert_eq!(creds.auth_method, Some("social".to_string()));
-        assert_eq!(creds.provider, Some("Google".to_string()));
-    }
 
     #[test]
     fn test_from_json() {
