@@ -30,16 +30,6 @@ impl KiroProvider {
         }
     }
 
-    /// 获取 TokenManager 的引用
-    pub fn token_manager(&self) -> &TokenManager {
-        &self.token_manager
-    }
-
-    /// 获取 TokenManager 的可变引用
-    pub fn token_manager_mut(&mut self) -> &mut TokenManager {
-        &mut self.token_manager
-    }
-
     /// 获取 API 基础 URL
     pub fn base_url(&self) -> String {
         format!(
