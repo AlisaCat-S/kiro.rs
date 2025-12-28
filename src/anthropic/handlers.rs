@@ -13,7 +13,7 @@ use bytes::Bytes;
 use futures::{stream, Stream, StreamExt};
 use serde_json::json;
 use uuid::Uuid;
-
+use crate::anthropic::token;
 use crate::kiro::model::events::Event;
 use crate::kiro::model::requests::kiro::KiroRequest;
 use crate::kiro::parser::decoder::EventStreamDecoder;
@@ -144,7 +144,7 @@ pub async fn post_messages(
     tracing::debug!("Kiro request body: {}", request_body);
 
     // 估算输入 tokens
-    let input_tokens = estimate_input_tokens_for_request(&payload);
+    let input_tokens = token::count_all_tokens(payload.system, payload.messages, payload.tools) as i32;
 
     // 检查是否启用了thinking
     let thinking_enabled = payload.thinking
@@ -409,7 +409,7 @@ async fn handle_non_stream_request(
     content.extend(tool_uses);
 
     // 估算输出 tokens
-    let output_tokens = estimate_output_tokens(&content);
+    let output_tokens = token::estimate_output_tokens(&content);
 
     // 构建 Anthropic 响应
     let response_body = json!({
@@ -429,64 +429,7 @@ async fn handle_non_stream_request(
     (StatusCode::OK, Json(response_body)).into_response()
 }
 
-/// 估算请求的输入 tokens
-fn estimate_input_tokens_for_request(req: &MessagesRequest) -> i32 {
-    let mut total = 0;
 
-    // 系统消息
-    if let Some(ref system) = req.system {
-        for msg in system {
-            total += estimate_input_tokens(&msg.text) as i32;
-        }
-    }
-
-    // 用户消息
-    for msg in &req.messages {
-        if let serde_json::Value::String(s) = &msg.content {
-            total += estimate_input_tokens(s) as i32;
-        } else if let serde_json::Value::Array(arr) = &msg.content {
-            for item in arr {
-                if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
-                    total += estimate_input_tokens(text) as i32;
-                }
-            }
-        }
-        total += 3; // 角色标记开销
-    }
-
-    // 工具定义
-    if let Some(ref tools) = req.tools {
-        total += 100; // 基础工具开销
-        for tool in tools {
-            total += estimate_input_tokens(&tool.name) as i32;
-            total += estimate_input_tokens(&tool.description) as i32;
-            total += 50; // Schema 开销
-        }
-    }
-
-    total.max(1)
-}
-
-/// 估算输出 tokens
-fn estimate_output_tokens(content: &[serde_json::Value]) -> i32 {
-    let mut total = 0;
-
-    for block in content {
-        if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
-            total += estimate_input_tokens(text) as i32;
-        }
-        if block.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
-            // 工具调用开销
-            total += 10; // id + name + type
-            if let Some(input) = block.get("input") {
-                let input_str = serde_json::to_string(input).unwrap_or_default();
-                total += (input_str.len() as i32 + 3) / 4;
-            }
-        }
-    }
-
-    total.max(1)
-}
 
 /// POST /v1/messages/count_tokens
 ///
@@ -498,38 +441,7 @@ pub async fn count_tokens(JsonExtractor(payload): JsonExtractor<CountTokensReque
         "Received POST /v1/messages/count_tokens request"
     );
 
-    let mut total_tokens: u64 = 0;
-
-    // 系统消息
-    if let Some(ref system) = payload.system {
-        for msg in system {
-            total_tokens += estimate_input_tokens(&msg.text);
-        }
-    }
-
-    // 用户消息
-    for msg in &payload.messages {
-        if let serde_json::Value::String(s) = &msg.content {
-            total_tokens += estimate_input_tokens(s);
-        } else if let serde_json::Value::Array(arr) = &msg.content {
-            for item in arr {
-                if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
-                    total_tokens += estimate_input_tokens(text);
-                }
-            }
-        }
-        total_tokens += 3; // 角色标记开销
-    }
-
-    // 工具定义
-    if let Some(ref tools) = payload.tools {
-        total_tokens += 100; // 基础工具开销
-        for tool in tools {
-            total_tokens += estimate_input_tokens(&tool.name);
-            total_tokens += estimate_input_tokens(&tool.description);
-            total_tokens += 50; // Schema 开销
-        }
-    }
+    let total_tokens = token::count_all_tokens(payload.system, payload.messages, payload.tools) as i32;
 
     Json(CountTokensResponse {
         input_tokens: total_tokens.max(1) as i32,

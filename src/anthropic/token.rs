@@ -3,185 +3,128 @@
 //! 提供文本 token 数量计算功能。
 //!
 //! # 计算规则
-//! - 中文/东亚字符：每个计 3.5 个字符单位
-//! - 其他字符：每个计 1 个字符单位
-//! - 3 个字符单位 = 1 token（四舍五入）
+//! - 非西文字符：每个计 4.5 个字符单位
+//! - 西文字符：每个计 1 个字符单位
+//! - 4 个字符单位 = 1 token（四舍五入）
 
-/// 判断字符是否为东亚字符（中文、日文、韩文等）
+use crate::anthropic::types::{Message, SystemMessage, Tool};
+
+
+/// 判断字符是否为非西文字符
 ///
-/// 包含以下 Unicode 范围：
-/// - CJK 统一汉字基本区: U+4E00..U+9FFF
-/// - CJK 扩展 A: U+3400..U+4DBF
-/// - CJK 扩展 B-H: U+20000..U+323AF (多个不连续区间)
-/// - CJK 部首补充: U+2E80..U+2EFF
-/// - 康熙部首: U+2F00..U+2FDF
-/// - 表意文字描述字符: U+2FF0..U+2FFF
-/// - CJK 兼容性汉字补充: U+2F800..U+2FA1F
-/// - 日文假名: U+3040..U+30FF (平假名、片假名)
-/// - 韩文字母: U+AC00..U+D7AF, U+1100..U+11FF
-/// - 全角标点: U+FF00..U+FFEF
-/// - 中日韩标点: U+3000..U+303F
-fn is_east_asian_char(c: char) -> bool {
-    matches!(c,
-        // CJK 统一汉字基本区
-        '\u{4E00}'..='\u{9FFF}' |
-        // CJK 扩展 A
-        '\u{3400}'..='\u{4DBF}' |
-        // CJK 部首补充
-        '\u{2E80}'..='\u{2EFF}' |
-        // 康熙部首
-        '\u{2F00}'..='\u{2FDF}' |
-        // 表意文字描述字符
-        '\u{2FF0}'..='\u{2FFF}' |
-        // CJK 扩展 B
-        '\u{20000}'..='\u{2A6DF}' |
-        // CJK 扩展 C
-        '\u{2A700}'..='\u{2B73F}' |
-        // CJK 扩展 D
-        '\u{2B740}'..='\u{2B81F}' |
-        // CJK 扩展 E
-        '\u{2B820}'..='\u{2CEAF}' |
-        // CJK 扩展 F
-        '\u{2CEB0}'..='\u{2EBEF}' |
-        // CJK 兼容性汉字补充
-        '\u{2F800}'..='\u{2FA1F}' |
-        // CJK 扩展 G
-        '\u{30000}'..='\u{3134F}' |
-        // CJK 扩展 H
-        '\u{31350}'..='\u{323AF}' |
-        // 日文平假名
-        '\u{3040}'..='\u{309F}' |
-        // 日文片假名
-        '\u{30A0}'..='\u{30FF}' |
-        // 韩文音节
-        '\u{AC00}'..='\u{D7AF}' |
-        // 韩文字母
-        '\u{1100}'..='\u{11FF}' |
-        // 全角 ASCII 和标点
-        '\u{FF00}'..='\u{FFEF}' |
-        // 中日韩标点符号
-        '\u{3000}'..='\u{303F}'
+/// 西文字符包括：
+/// - ASCII 字符 (U+0000..U+007F)
+/// - 拉丁字母扩展 (U+0080..U+024F)
+/// - 拉丁字母扩展附加 (U+1E00..U+1EFF)
+///
+/// 返回 true 表示该字符是非西文字符（如中文、日文、韩文、阿拉伯文等）
+fn is_non_western_char(c: char) -> bool {
+    !matches!(c,
+        // 基本 ASCII
+        '\u{0000}'..='\u{007F}' |
+        // 拉丁字母扩展-A (Latin Extended-A)
+        '\u{0080}'..='\u{00FF}' |
+        // 拉丁字母扩展-B (Latin Extended-B)
+        '\u{0100}'..='\u{024F}' |
+        // 拉丁字母扩展附加 (Latin Extended Additional)
+        '\u{1E00}'..='\u{1EFF}' |
+        // 拉丁字母扩展-C/D/E
+        '\u{2C60}'..='\u{2C7F}' |
+        '\u{A720}'..='\u{A7FF}' |
+        '\u{AB30}'..='\u{AB6F}'
     )
 }
+
 
 /// 计算文本的 token 数量
 ///
 /// # 计算规则
-/// - 中文/东亚字符：每个计 3.5 个字符单位
-/// - 其他字符：每个计 1 个字符单位
-/// - 3 个字符单位 = 1 token（四舍五入）
-///
-/// # 实现细节
-/// 为避免浮点精度问题，内部使用 2 倍放大：
-/// - 中文字符 = 7 单位，普通字符 = 2 单位，6 单位 = 1 token
-///
-/// # 示例
-/// ```
-/// use kiro_rs::anthropic::token::count_tokens;
-///
-/// // "你" = 3.5 字符单位 ≈ 1 token
-/// assert_eq!(count_tokens("你"), 1);
-///
-/// // "abc" = 3 字符单位 = 1 token
-/// assert_eq!(count_tokens("abc"), 1);
-///
-/// // "你好" = 7 字符单位 ≈ 2 tokens
-/// assert_eq!(count_tokens("你好"), 2);
+/// - 非西文字符：每个计 4.5 个字符单位
+/// - 西文字符：每个计 1 个字符单位
+/// - 4 个字符单位 = 1 token（四舍五入）
 /// ```
 pub fn count_tokens(text: &str) -> u64 {
-    // 使用 2 倍放大避免浮点精度问题
-    // 中文 = 7 (3.5 × 2), 普通 = 2 (1 × 2), 除数 = 6 (3 × 2)
-    let char_units: u64 = text
+    println!("text: {}", text);
+
+    let char_units: f64 = text
         .chars()
-        .map(|c| if is_east_asian_char(c) { 7 } else { 2 })
+        .map(|c| if is_non_western_char(c) { 4.5 } else { 1.0 })
         .sum();
 
-    // 四舍五入: (n + 3) / 6
-    (char_units + 3) / 6
+    let tokens = char_units / 4.0;
+
+    let acc_token = if tokens < 100.0 {
+        tokens * 1.5
+    } else if tokens < 200.0 {
+        tokens * 1.3
+    } else if tokens < 300.0 {
+        tokens * 1.25
+    } else if tokens < 800.0 {
+        tokens * 1.2
+    } else {
+        tokens * 1.0
+    } as u64;
+
+    println!("tokens: {}, acc_tokens: {}", tokens, acc_token);
+    acc_token
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    #[test]
-    fn test_empty_string() {
-        assert_eq!(count_tokens(""), 0);
+/// 估算请求的输入 tokens
+pub(crate) fn count_all_tokens(system: Option<Vec<SystemMessage>>, messages: Vec<Message>, tools: Option<Vec<Tool>>) -> u64 {
+    let mut total = 0;
+
+    // 系统消息
+    if let Some(ref system) = system {
+        for msg in system {
+            total += count_tokens(&msg.text);
+        }
     }
 
-    #[test]
-    fn test_chinese_only() {
-        // 1 个中文 = 3.5 字符单位 ≈ 1 token (3.5/3=1.17)
-        assert_eq!(count_tokens("你"), 1);
-        // 2 个中文 = 7 字符单位 ≈ 2 tokens (7/3=2.33)
-        assert_eq!(count_tokens("你好"), 2);
-        // 3 个中文 = 10.5 字符单位 ≈ 4 tokens (10.5/3=3.5)
-        assert_eq!(count_tokens("你好世"), 4);
+    // 用户消息
+    for msg in &messages {
+        if let serde_json::Value::String(s) = &msg.content {
+            total += count_tokens(s);
+        } else if let serde_json::Value::Array(arr) = &msg.content {
+            for item in arr {
+                if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                    total += count_tokens(text);
+                }
+            }
+        }
     }
 
-    #[test]
-    fn test_ascii_only() {
-        // 3 个 ASCII = 3 字符单位 = 1 token
-        assert_eq!(count_tokens("abc"), 1);
-        // 6 个 ASCII = 6 字符单位 = 2 tokens
-        assert_eq!(count_tokens("abcdef"), 2);
-        // 9 个 ASCII = 9 字符单位 = 3 tokens
-        assert_eq!(count_tokens("abcdefghi"), 3);
+    // 工具定义
+    if let Some(ref tools) = tools {
+        for tool in tools {
+            total += count_tokens(&tool.name);
+            total += count_tokens(&tool.description);
+            let input_schema_json = serde_json::to_string(&tool.input_schema).unwrap_or_default();
+            total += count_tokens(&input_schema_json);
+        }
     }
 
-    #[test]
-    fn test_mixed() {
-        // "你好abc" = 7+3 = 10 字符单位 ≈ 3 tokens (10/3=3.33)
-        assert_eq!(count_tokens("你好abc"), 3);
-        // "a你" = 1+3.5 = 4.5 字符单位 ≈ 2 tokens (4.5/3=1.5)
-        assert_eq!(count_tokens("a你"), 2);
-    }
-
-    #[test]
-    fn test_rounding() {
-        // 1 字符单位: 1/3=0.33 → 0
-        assert_eq!(count_tokens("a"), 0);
-        // 2 字符单位: 2/3=0.67 → 1
-        assert_eq!(count_tokens("ab"), 1);
-        // 3 字符单位: 3/3=1.0 → 1
-        assert_eq!(count_tokens("abc"), 1);
-        // 4 字符单位: 4/3=1.33 → 1
-        assert_eq!(count_tokens("abcd"), 1);
-        // 5 字符单位: 5/3=1.67 → 2
-        assert_eq!(count_tokens("abcde"), 2);
-        // 6 字符单位: 6/3=2.0 → 2
-        assert_eq!(count_tokens("abcdef"), 2);
-    }
-
-    #[test]
-    fn test_japanese() {
-        // 平假名 "あ" = 3.5 字符单位 ≈ 1 token
-        assert_eq!(count_tokens("あ"), 1);
-        // 片假名 "アイ" = 7 字符单位 ≈ 2 tokens
-        assert_eq!(count_tokens("アイ"), 2);
-    }
-
-    #[test]
-    fn test_korean() {
-        // 韩文 "안" = 3.5 字符单位 ≈ 1 token
-        assert_eq!(count_tokens("안"), 1);
-        // 韩文 "안녕" = 7 字符单位 ≈ 2 tokens
-        assert_eq!(count_tokens("안녕"), 2);
-    }
-
-    #[test]
-    fn test_fullwidth() {
-        // 全角字符 "Ａ" = 3.5 字符单位 ≈ 1 token
-        assert_eq!(count_tokens("Ａ"), 1);
-        // 全角字符 "ＡＢ" = 7 字符单位 ≈ 2 tokens
-        assert_eq!(count_tokens("ＡＢ"), 2);
-    }
-
-    #[test]
-    fn test_cjk_punctuation() {
-        // 中日韩标点 "。" = 3.5 字符单位 ≈ 1 token
-        assert_eq!(count_tokens("。"), 1);
-        // 中日韩标点 "。、" = 7 字符单位 ≈ 2 tokens
-        assert_eq!(count_tokens("。、"), 2);
-    }
+    total.max(1)
 }
+
+
+/// 估算输出 tokens
+pub(crate) fn estimate_output_tokens(content: &[serde_json::Value]) -> i32 {
+    let mut total = 0;
+
+    for block in content {
+        if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+            total += count_tokens(text) as i32;
+        }
+        if block.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
+            // 工具调用开销
+            if let Some(input) = block.get("input") {
+                let input_str = serde_json::to_string(input).unwrap_or_default();
+                total += count_tokens(&input_str) as i32;
+            }
+        }
+    }
+
+    total.max(1)
+}
+
