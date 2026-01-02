@@ -102,14 +102,26 @@ async fn main() {
         first_credentials.profile_arn.clone(),
     );
 
-    // 构建 Admin API 路由（如果配置了 admin_api_key）
-    let app = if let Some(admin_key) = &config.admin_api_key {
-        let admin_service = admin::AdminService::new(token_manager.clone());
-        let admin_state = admin::AdminState::new(admin_key, admin_service);
-        let admin_app = admin::create_admin_router(admin_state);
+    // 构建 Admin API 路由（如果配置了非空的 admin_api_key）
+    // 安全检查：空字符串被视为未配置，防止空 key 绕过认证
+    let admin_key_valid = config
+        .admin_api_key
+        .as_ref()
+        .map(|k| !k.trim().is_empty())
+        .unwrap_or(false);
 
-        tracing::info!("Admin API 已启用");
-        anthropic_app.nest("/api/admin", admin_app)
+    let app = if let Some(admin_key) = &config.admin_api_key {
+        if admin_key.trim().is_empty() {
+            tracing::warn!("admin_api_key 配置为空，Admin API 未启用");
+            anthropic_app
+        } else {
+            let admin_service = admin::AdminService::new(token_manager.clone());
+            let admin_state = admin::AdminState::new(admin_key, admin_service);
+            let admin_app = admin::create_admin_router(admin_state);
+
+            tracing::info!("Admin API 已启用");
+            anthropic_app.nest("/api/admin", admin_app)
+        }
     } else {
         anthropic_app
     };
@@ -122,7 +134,7 @@ async fn main() {
     tracing::info!("  GET  /v1/models");
     tracing::info!("  POST /v1/messages");
     tracing::info!("  POST /v1/messages/count_tokens");
-    if config.admin_api_key.is_some() {
+    if admin_key_valid {
         tracing::info!("Admin API:");
         tracing::info!("  GET  /api/admin/credentials");
         tracing::info!("  POST /api/admin/credentials/:index/disabled");
