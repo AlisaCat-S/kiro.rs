@@ -116,6 +116,28 @@ pub struct BalanceResponse {
     pub next_reset_at: Option<f64>,
 }
 
+/// 缓存余额信息
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CachedBalanceItem {
+    /// 凭据 ID
+    pub id: u64,
+    /// 缓存的剩余额度
+    pub remaining: f64,
+    /// 缓存时间（Unix 毫秒时间戳）
+    pub cached_at: u64,
+    /// 缓存存活时间（秒），缓存过期时间 = cached_at + ttl_secs * 1000
+    pub ttl_secs: u64,
+}
+
+/// 所有凭据的缓存余额响应
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CachedBalancesResponse {
+    /// 各凭据的缓存余额列表
+    pub balances: Vec<CachedBalanceItem>,
+}
+
 // ============ 通用响应 ============
 
 /// 操作成功响应

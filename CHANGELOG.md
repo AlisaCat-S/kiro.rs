@@ -3,6 +3,10 @@
 ## [Unreleased]
 
 ### Added
+- 新增缓存余额查询 API（`GET /credentials/balances/cached`）
+  - 后端：`CachedBalanceInfo` 结构体、`get_all_cached_balances()` 方法
+  - 前端：凭据卡片直接显示缓存余额和更新时间
+  - 30 秒自动轮询更新，缓存超过 1 分钟时点击强制刷新
 - 新增 Bonus 用量包支持（`src/kiro/model/usage_limits.rs`）
   - 新增 `Bonus` 结构体，支持 GIFT 类型的额外用量包
   - 新增 `Bonus::is_active()` 方法，按状态/过期时间判断是否激活

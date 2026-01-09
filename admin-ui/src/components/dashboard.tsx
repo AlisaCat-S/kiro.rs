@@ -9,7 +9,7 @@ import { Badge } from '@/components/ui/badge'
 import { CredentialCard } from '@/components/credential-card'
 import { BalanceDialog } from '@/components/balance-dialog'
 import { AddCredentialDialog } from '@/components/add-credential-dialog'
-import { useCredentials } from '@/hooks/use-credentials'
+import { useCredentials, useCachedBalances } from '@/hooks/use-credentials'
 
 interface DashboardProps {
   onLogout: () => void
@@ -18,6 +18,7 @@ interface DashboardProps {
 export function Dashboard({ onLogout }: DashboardProps) {
   const [selectedCredentialId, setSelectedCredentialId] = useState<number | null>(null)
   const [balanceDialogOpen, setBalanceDialogOpen] = useState(false)
+  const [forceRefreshBalance, setForceRefreshBalance] = useState(false)
   const [addDialogOpen, setAddDialogOpen] = useState(false)
   const [darkMode, setDarkMode] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -28,14 +29,25 @@ export function Dashboard({ onLogout }: DashboardProps) {
 
   const queryClient = useQueryClient()
   const { data, isLoading, error, refetch } = useCredentials()
+  const { data: cachedBalancesData } = useCachedBalances()
+
+  // 构建 id -> cachedBalance 的映射
+  const cachedBalanceMap = new Map(
+    cachedBalancesData?.balances.map((b) => [b.id, b]) ?? []
+  )
 
   const toggleDarkMode = () => {
     setDarkMode(!darkMode)
     document.documentElement.classList.toggle('dark')
   }
 
-  const handleViewBalance = (id: number) => {
+  const handleViewBalance = (id: number, forceRefresh: boolean) => {
     setSelectedCredentialId(id)
+    setForceRefreshBalance(forceRefresh)
+    if (forceRefresh) {
+      // 清除该凭据的余额缓存，强制重新获取
+      queryClient.invalidateQueries({ queryKey: ['credential-balance', id] })
+    }
     setBalanceDialogOpen(true)
   }
 
@@ -161,6 +173,7 @@ export function Dashboard({ onLogout }: DashboardProps) {
                 <CredentialCard
                   key={credential.id}
                   credential={credential}
+                  cachedBalance={cachedBalanceMap.get(credential.id)}
                   onViewBalance={handleViewBalance}
                 />
               ))}
@@ -173,7 +186,11 @@ export function Dashboard({ onLogout }: DashboardProps) {
       <BalanceDialog
         credentialId={selectedCredentialId}
         open={balanceDialogOpen}
-        onOpenChange={setBalanceDialogOpen}
+        onOpenChange={(open) => {
+          setBalanceDialogOpen(open)
+          if (!open) setForceRefreshBalance(false)
+        }}
+        forceRefresh={forceRefreshBalance}
       />
 
       {/* 添加凭据对话框 */}

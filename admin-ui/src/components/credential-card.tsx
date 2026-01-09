@@ -14,7 +14,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import type { CredentialStatusItem } from '@/types/api'
+import type { CredentialStatusItem, CachedBalanceInfo } from '@/types/api'
 import {
   useSetDisabled,
   useSetPriority,
@@ -24,10 +24,11 @@ import {
 
 interface CredentialCardProps {
   credential: CredentialStatusItem
-  onViewBalance: (id: number) => void
+  cachedBalance?: CachedBalanceInfo
+  onViewBalance: (id: number, forceRefresh: boolean) => void
 }
 
-export function CredentialCard({ credential, onViewBalance }: CredentialCardProps) {
+export function CredentialCard({ credential, cachedBalance, onViewBalance }: CredentialCardProps) {
   const [editingPriority, setEditingPriority] = useState(false)
   const [priorityValue, setPriorityValue] = useState(String(credential.priority))
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
@@ -105,6 +106,29 @@ export function CredentialCard({ credential, onViewBalance }: CredentialCardProp
     const hours = Math.floor(minutes / 60)
     if (hours < 24) return `${hours} 小时`
     return `${Math.floor(hours / 24)} 天`
+  }
+
+  // 格式化缓存时间（相对时间）
+  const formatCacheAge = (cachedAt: number) => {
+    const now = Date.now()
+    const diff = now - cachedAt
+    const seconds = Math.floor(diff / 1000)
+    if (seconds < 60) return `${seconds}秒前`
+    const minutes = Math.floor(seconds / 60)
+    if (minutes < 60) return `${minutes}分钟前`
+    return `${Math.floor(minutes / 60)}小时前`
+  }
+
+  // 检查缓存是否过期（使用后端返回的 TTL）
+  const isCacheStale = () => {
+    if (!cachedBalance) return true
+    const ageMs = Date.now() - cachedBalance.cachedAt
+    const ttlMs = (cachedBalance.ttlSecs ?? 60) * 1000
+    return ageMs > ttlMs
+  }
+
+  const handleViewBalance = () => {
+    onViewBalance(credential.id, isCacheStale())
   }
 
   return (
@@ -190,6 +214,21 @@ export function CredentialCard({ credential, onViewBalance }: CredentialCardProp
               <span className="text-muted-foreground">Token 有效期：</span>
               <span className="font-medium">{formatExpiry(credential.expiresAt)}</span>
             </div>
+            <div>
+              <span className="text-muted-foreground">余额：</span>
+              {cachedBalance && cachedBalance.ttlSecs > 0 ? (
+                <>
+                  <span className={`font-medium ${cachedBalance.remaining > 0 ? 'text-green-600' : 'text-red-500'}`}>
+                    ${cachedBalance.remaining.toFixed(2)}
+                  </span>
+                  <span className="text-xs text-muted-foreground ml-1">
+                    ({formatCacheAge(cachedBalance.cachedAt)})
+                  </span>
+                </>
+              ) : (
+                <span className="text-muted-foreground">—</span>
+              )}
+            </div>
             {credential.hasProfileArn && (
               <div className="col-span-2">
                 <Badge variant="secondary">有 Profile ARN</Badge>
@@ -247,7 +286,7 @@ export function CredentialCard({ credential, onViewBalance }: CredentialCardProp
             <Button
               size="sm"
               variant="default"
-              onClick={() => onViewBalance(credential.id)}
+              onClick={handleViewBalance}
             >
               <Wallet className="h-4 w-4 mr-1" />
               查看余额

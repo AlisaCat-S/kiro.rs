@@ -12,10 +12,12 @@ interface BalanceDialogProps {
   credentialId: number | null
   open: boolean
   onOpenChange: (open: boolean) => void
+  forceRefresh?: boolean
 }
 
-export function BalanceDialog({ credentialId, open, onOpenChange }: BalanceDialogProps) {
-  const { data: balance, isLoading, error } = useCredentialBalance(credentialId)
+export function BalanceDialog({ credentialId, open, onOpenChange, forceRefresh }: BalanceDialogProps) {
+  const { data: balance, isLoading, isFetching, error } = useCredentialBalance(credentialId)
+  const showLoading = isLoading || (forceRefresh && isFetching)
 
   const formatDate = (timestamp: number | null) => {
     if (!timestamp) return '未知'
@@ -35,7 +37,7 @@ export function BalanceDialog({ credentialId, open, onOpenChange }: BalanceDialo
           </DialogTitle>
         </DialogHeader>
 
-        {isLoading && (
+        {showLoading && (
           <div className="flex items-center justify-center py-8">
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
           </div>

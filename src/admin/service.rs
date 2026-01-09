@@ -7,8 +7,8 @@ use crate::kiro::token_manager::MultiTokenManager;
 
 use super::error::AdminServiceError;
 use super::types::{
-    AddCredentialRequest, AddCredentialResponse, BalanceResponse, CredentialStatusItem,
-    CredentialsStatusResponse,
+    AddCredentialRequest, AddCredentialResponse, BalanceResponse, CachedBalanceItem,
+    CachedBalancesResponse, CredentialStatusItem, CredentialsStatusResponse,
 };
 
 /// Admin 服务
@@ -110,6 +110,23 @@ impl AdminService {
             usage_percentage,
             next_reset_at: usage.next_date_reset,
         })
+    }
+
+    /// 获取所有凭据的缓存余额
+    pub fn get_cached_balances(&self) -> CachedBalancesResponse {
+        let balances = self
+            .token_manager
+            .get_all_cached_balances()
+            .into_iter()
+            .map(|info| CachedBalanceItem {
+                id: info.id,
+                remaining: info.remaining,
+                cached_at: info.cached_at,
+                ttl_secs: info.ttl_secs,
+            })
+            .collect();
+
+        CachedBalancesResponse { balances }
     }
 
     /// 添加新凭据

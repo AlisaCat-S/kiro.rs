@@ -6,6 +6,7 @@ import {
   setCredentialPriority,
   resetCredentialFailure,
   getCredentialBalance,
+  getCachedBalances,
   getCredentialAccountInfo,
   addCredential,
   getCredentialStats,
@@ -30,6 +31,16 @@ export function useCredentialBalance(id: number | null) {
     queryFn: () => getCredentialBalance(id!),
     enabled: id !== null,
     retry: false, // 余额查询失败时不重试（避免重复请求被封禁的账号）
+  })
+}
+
+// 查询所有凭据的缓存余额（定时轮询，带退避策略）
+export function useCachedBalances() {
+  return useQuery({
+    queryKey: ['cached-balances'],
+    queryFn: getCachedBalances,
+    refetchInterval: (query) => (query.state.error ? 60000 : 30000),
+    refetchIntervalInBackground: false, // 页面不可见时暂停轮询
   })
 }
 

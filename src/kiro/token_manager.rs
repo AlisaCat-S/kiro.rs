@@ -435,10 +435,26 @@ pub struct ManagerSnapshot {
     pub available: usize,
 }
 
+/// 缓存余额信息（用于 Admin API）
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CachedBalanceInfo {
+    /// 凭据 ID
+    pub id: u64,
+    /// 缓存的剩余额度
+    pub remaining: f64,
+    /// 缓存时间（Unix 毫秒时间戳）
+    pub cached_at: u64,
+    /// 缓存存活时间（秒）
+    pub ttl_secs: u64,
+}
+
 /// 余额缓存条目
 struct CachedBalance {
     remaining: f64,
     cached_at: std::time::Instant,
+    /// 是否已初始化（区分"未获取过余额"和"余额为零"）
+    initialized: bool,
     /// 最近一段时间的使用次数（用于判断高频/低频）
     recent_usage: u32,
     /// 上次重置使用计数的时间
@@ -578,6 +594,7 @@ impl MultiTokenManager {
                     CachedBalance {
                         remaining: 0.0,
                         cached_at: now,
+                        initialized: false,
                         recent_usage: 0,
                         usage_reset_at: now,
                     },
@@ -813,6 +830,7 @@ impl MultiTokenManager {
             CachedBalance {
                 remaining,
                 cached_at: now,
+                initialized: true,
                 recent_usage,
                 usage_reset_at,
             },
@@ -823,8 +841,8 @@ impl MultiTokenManager {
     pub fn should_refresh_balance(&self, id: u64) -> bool {
         let cache = self.balance_cache.lock();
         if let Some(entry) = cache.get(&id) {
-            // remaining == 0.0 表示未初始化，需要立即刷新
-            if entry.remaining == 0.0 {
+            // 未初始化的缓存需要立即刷新
+            if !entry.initialized {
                 return true;
             }
             // 使用动态 TTL 判断是否过期
@@ -860,11 +878,59 @@ impl MultiTokenManager {
                 CachedBalance {
                     remaining: 0.0,
                     cached_at: now,
+                    initialized: false,
                     recent_usage: 1,
                     usage_reset_at: now,
                 },
             );
         }
+    }
+
+    /// 获取所有凭据的缓存余额信息（用于 Admin API）
+    ///
+    /// 返回每个凭据的缓存余额、缓存时间和 TTL
+    pub fn get_all_cached_balances(&self) -> Vec<CachedBalanceInfo> {
+        // 先获取 entries 的 ID 列表，避免同时持有两个锁
+        let entry_ids: Vec<u64> = {
+            let entries = self.entries.lock();
+            entries.iter().map(|e| e.id).collect()
+        };
+
+        let cache = self.balance_cache.lock();
+        let now_unix_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        entry_ids
+            .iter()
+            .filter_map(|&id| {
+                cache.get(&id).map(|cached| {
+                    // 计算动态 TTL
+                    let ttl_secs = if !cached.initialized {
+                        // 未初始化的缓存，TTL 设为 0（已过期）
+                        0
+                    } else if cached.remaining < LOW_BALANCE_THRESHOLD {
+                        BALANCE_TTL_LOW_BALANCE_SECS
+                    } else if cached.recent_usage >= HIGH_FREQ_THRESHOLD {
+                        BALANCE_TTL_HIGH_FREQ_SECS
+                    } else {
+                        BALANCE_TTL_LOW_FREQ_SECS
+                    };
+
+                    // 计算缓存时间的 Unix 毫秒时间戳
+                    let elapsed_ms = cached.cached_at.elapsed().as_millis() as u64;
+                    let cached_at_unix_ms = now_unix_ms.saturating_sub(elapsed_ms);
+
+                    CachedBalanceInfo {
+                        id,
+                        remaining: cached.remaining,
+                        cached_at: cached_at_unix_ms,
+                        ttl_secs,
+                    }
+                })
+            })
+            .collect()
     }
 
     /// 切换到下一个优先级最高的可用凭据（内部方法）
