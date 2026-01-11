@@ -379,7 +379,12 @@ pub(crate) async fn get_usage_limits(
         bail!("{}: {} {}", error_msg, status, body_text);
     }
 
-    let data: UsageLimitsResponse = response.json().await?;
+    // 先获取原始响应文本，便于调试 JSON 解析错误
+    let body_text = response.text().await?;
+    tracing::debug!("getUsageLimits 原始响应: {}", body_text);
+
+    let data: UsageLimitsResponse = serde_json::from_str(&body_text)
+        .map_err(|e| anyhow::anyhow!("JSON 解析失败: {}，原始响应: {}", e, body_text))?;
     Ok(data)
 }
 
