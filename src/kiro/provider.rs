@@ -22,7 +22,7 @@ use crate::kiro::model::credentials::KiroCredentials;
 const MAX_RETRIES_PER_CREDENTIAL: usize = 2;
 
 /// 总重试次数硬上限（避免无限重试）
-const MAX_TOTAL_RETRIES: usize = 5;
+const MAX_TOTAL_RETRIES: usize = 3;
 
 /// Kiro API Provider
 ///
@@ -349,6 +349,19 @@ impl KiroProvider {
                     status,
                     body
                 );
+
+                // 检测 MODEL_TEMPORARILY_UNAVAILABLE 并触发熔断机制
+                if Self::is_model_temporarily_unavailable(&body)
+                    && self.token_manager.report_model_unavailable()
+                {
+                    // 熔断已触发，所有凭据已禁用，立即返回错误
+                    anyhow::bail!(
+                        "MCP 请求失败（模型暂时不可用，已触发熔断）: {} {}",
+                        status,
+                        body
+                    );
+                }
+
                 last_error = Some(anyhow::anyhow!("MCP 请求失败: {} {}", status, body));
                 if attempt + 1 < max_retries {
                     sleep(Self::retry_delay(attempt)).await;
@@ -378,7 +391,7 @@ impl KiroProvider {
     /// 重试策略：
     /// - 每个凭据最多重试 MAX_RETRIES_PER_CREDENTIAL 次
     /// - 总重试次数 = min(凭据数量 × 每凭据重试次数, MAX_TOTAL_RETRIES)
-    /// - 硬上限 5 次，避免无限重试
+    /// - 硬上限 3 次，避免无限重试
     async fn call_api_with_retry(
         &self,
         request_body: &str,
@@ -523,6 +536,20 @@ impl KiroProvider {
                     status,
                     body
                 );
+
+                // 检测 MODEL_TEMPORARILY_UNAVAILABLE 并触发熔断机制
+                if Self::is_model_temporarily_unavailable(&body)
+                    && self.token_manager.report_model_unavailable()
+                {
+                    // 熔断已触发，所有凭据已禁用，立即返回错误
+                    anyhow::bail!(
+                        "{} API 请求失败（模型暂时不可用，已触发熔断）: {} {}",
+                        api_type,
+                        status,
+                        body
+                    );
+                }
+
                 last_error = Some(anyhow::anyhow!(
                     "{} API 请求失败: {} {}",
                     api_type,
@@ -601,6 +628,30 @@ impl KiroProvider {
             .pointer("/error/reason")
             .and_then(|v| v.as_str())
             .is_some_and(|v| v == "MONTHLY_REQUEST_COUNT")
+    }
+
+    /// 检测是否为 MODEL_TEMPORARILY_UNAVAILABLE 错误
+    fn is_model_temporarily_unavailable(body: &str) -> bool {
+        if body.contains("MODEL_TEMPORARILY_UNAVAILABLE") {
+            return true;
+        }
+
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+            return false;
+        };
+
+        if value
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .is_some_and(|v| v == "MODEL_TEMPORARILY_UNAVAILABLE")
+        {
+            return true;
+        }
+
+        value
+            .pointer("/error/reason")
+            .and_then(|v| v.as_str())
+            .is_some_and(|v| v == "MODEL_TEMPORARILY_UNAVAILABLE")
     }
 }
 

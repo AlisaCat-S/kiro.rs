@@ -1234,7 +1234,6 @@ impl MultiTokenManager {
     ///
     /// 累计达到阈值后禁用所有凭据，10分钟后自动恢复
     /// 返回是否触发了全局禁用
-    #[allow(dead_code)]
     pub fn report_model_unavailable(&self) -> bool {
         let count = self.model_unavailable_count.fetch_add(1, Ordering::SeqCst) + 1;
         tracing::warn!(
@@ -1252,7 +1251,6 @@ impl MultiTokenManager {
     }
 
     /// 禁用所有凭据
-    #[allow(dead_code)]
     fn disable_all_credentials(&self, reason: DisableReason) {
         let mut entries = self.entries.lock();
         let mut recovery_time = self.global_recovery_time.lock();

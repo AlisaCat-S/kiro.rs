@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Changed
+- 调整总重试次数硬上限：`MAX_TOTAL_RETRIES` 从 5 降至 3
+  - 进一步减少无效重试开销，加快故障转移速度
+
+### Fixed
+- 修复 `MODEL_TEMPORARILY_UNAVAILABLE` 错误检测逻辑未实际调用的问题
+  - 在 `call_mcp()` 和 `call_api()` 中添加错误检测和熔断触发逻辑
+  - 移除 `report_model_unavailable()` 和 `disable_all_credentials()` 的 `#[allow(dead_code)]` 标记
+  - 现在当检测到该错误时会正确触发全局熔断机制
+
 ### Added
 - 新增 WebSearch 工具支持（`src/anthropic/websearch.rs`）
   - 实现 Anthropic WebSearch 请求到 Kiro MCP 的转换
