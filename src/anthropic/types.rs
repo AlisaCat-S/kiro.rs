@@ -155,6 +155,14 @@ where
             Ok(None)
         }
 
+        fn visit_unit<E>(self) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            // JSON null 会调用 visit_unit
+            Ok(None)
+        }
+
         fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
         where
             D: serde::Deserializer<'de>,
@@ -480,6 +488,35 @@ mod tests {
 
         let req: MessagesRequest = serde_json::from_str(json).unwrap();
         assert!(req.system.is_none());
+    }
+
+    /// 测试 system 字段为 null 时为 None
+    /// 某些 API 网关可能显式发送 "system": null
+    #[test]
+    fn test_system_null() {
+        let json = r#"{
+            "model": "claude-sonnet-4-5-20250929",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "system": null
+        }"#;
+
+        let req: MessagesRequest =
+            serde_json::from_str(json).expect("应该能解析 system: null");
+        assert!(req.system.is_none(), "system: null 应该等价于字段缺失");
+    }
+
+    /// 测试 system 字段为空数组时为 None
+    #[test]
+    fn test_system_empty_array() {
+        let json = r#"{
+            "model": "claude-sonnet-4-5-20250929",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "system": []
+        }"#;
+
+        let req: MessagesRequest =
+            serde_json::from_str(json).expect("应该能解析 system: []");
+        assert!(req.system.is_none(), "system: [] 应该等价于字段缺失");
     }
 
     // ==================== CountTokensRequest 格式兼容性测试 ====================
