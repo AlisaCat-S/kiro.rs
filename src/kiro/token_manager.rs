@@ -1389,7 +1389,18 @@ impl MultiTokenManager {
                     let remaining = (limit - used).max(0.0);
 
                     self.update_balance_cache(id, remaining);
-                    tracing::info!("凭据 #{} 余额初始化成功: {:.2}", id, remaining);
+
+                    // 余额小于 1 时自动禁用凭据
+                    if remaining < 1.0 {
+                        let mut entries = self.entries.lock();
+                        if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
+                            entry.disabled = true;
+                            entry.disable_reason = Some(DisableReason::InsufficientBalance);
+                            tracing::warn!("凭据 #{} 余额不足 ({:.2})，已自动禁用", id, remaining);
+                        }
+                    } else {
+                        tracing::info!("凭据 #{} 余额初始化成功: {:.2}", id, remaining);
+                    }
                     success_count += 1;
                 }
                 Err(e) => {
