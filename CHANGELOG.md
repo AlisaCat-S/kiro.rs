@@ -2,7 +2,32 @@
 
 ## [Unreleased]
 
+### Added
+- 新增批量导入 token.json 功能
+  - 后端：新增 `POST /api/admin/credentials/import-token-json` 端点
+  - 支持解析官方 token.json 格式（含 `provider`、`refreshToken`、`clientId`、`clientSecret` 等字段）
+  - 按 `provider` 字段自动映射 `authMethod`（BuilderId → idc, IdC → idc, Social → social）
+  - 支持 dry-run 预览模式，返回详细的导入结果（成功/跳过/无效）
+  - 通过 refreshToken 前缀匹配自动去重，避免重复导入
+  - 前端：新增"导入 token.json"对话框组件
+  - 支持拖放上传 JSON 文件或直接粘贴 JSON 内容
+  - 三步流程：输入 → 预览 → 结果
+  - 涉及文件：
+    - `src/admin/types.rs`（新增 `TokenJsonItem`、`ImportTokenJsonRequest`、`ImportTokenJsonResponse` 等类型）
+    - `src/admin/service.rs`（新增 `import_token_json()` 方法）
+    - `src/admin/handlers.rs`（新增 `import_token_json` handler）
+    - `src/admin/router.rs`（添加路由）
+    - `src/kiro/token_manager.rs`（新增 `has_refresh_token_prefix()` 方法）
+    - `admin-ui/src/types/api.ts`（新增导入相关类型）
+    - `admin-ui/src/api/credentials.ts`（新增 `importTokenJson()` 函数）
+    - `admin-ui/src/hooks/use-credentials.ts`（新增 `useImportTokenJson()` hook）
+    - `admin-ui/src/components/import-token-json-dialog.tsx`（新建）
+    - `admin-ui/src/components/dashboard.tsx`（添加导入按钮）
+
 ### Fixed
+- 修复字符串切片在多字节字符中间切割导致 panic 的风险（DoS 漏洞）
+  - `generate_fingerprint()` 和 `has_refresh_token_prefix()` 使用 `floor_char_boundary()` 安全截断
+  - 涉及文件：`src/admin/service.rs`, `src/kiro/token_manager.rs`
 - 修复日志截断在多字节字符中间切割导致 panic 的问题
   - `truncate_for_log()` 使用 `floor_char_boundary()` 安全截断 UTF-8 字符串
   - 删除 `stream.rs` 中冗余的 `find_char_boundary()` 函数，直接使用标准库方法
@@ -20,6 +45,12 @@
   - 涉及文件：`src/anthropic/stream.rs`
 
 ### Changed
+- 增强 400 Bad Request 错误日志，记录完整请求信息
+  - 移除请求体截断限制，记录完整的 `request_body`
+  - 新增 `request_url` 和 `request_headers` 字段
+  - 新增 `format_headers_for_log()` 辅助函数，对 Authorization 头进行脱敏处理
+  - 删除不再使用的 `truncate_for_log()` 函数（YAGNI 原则）
+  - 涉及文件：`src/kiro/provider.rs`
 - 改进凭据选择算法：同优先级内实现负载均衡
   - 第一优先级：使用次数最少
   - 第二优先级：余额最多（使用次数相同时）
