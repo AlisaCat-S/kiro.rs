@@ -276,6 +276,8 @@ impl KiroProvider {
                     continue;
                 }
             };
+            // 克隆 headers 用于错误日志（原 headers 会被 move）
+            let headers_for_log = headers.clone();
 
             // 发送请求
             let response = match self
@@ -325,12 +327,13 @@ impl KiroProvider {
 
             // 400 Bad Request
             if status.as_u16() == 400 {
-                // 记录详细的请求信息以便调试
+                // 记录完整的请求信息以便调试（不截断）
                 tracing::error!(
                     status = %status,
                     response_body = %body,
-                    request_body_len = request_body.len(),
-                    request_body_preview = %Self::truncate_for_log(request_body, 2000),
+                    request_url = %url,
+                    request_headers = %Self::format_headers_for_log(&headers_for_log),
+                    request_body = %request_body,
                     "MCP 400 Bad Request - 请求格式错误"
                 );
                 anyhow::bail!("MCP 请求失败: {} {}", status, body);
@@ -427,6 +430,8 @@ impl KiroProvider {
                     continue;
                 }
             };
+            // 克隆 headers 用于错误日志（原 headers 会被 move）
+            let headers_for_log = headers.clone();
 
             // 发送请求
             let response = match self
@@ -500,12 +505,13 @@ impl KiroProvider {
 
             // 400 Bad Request - 请求问题，重试/切换凭据无意义
             if status.as_u16() == 400 {
-                // 记录详细的请求信息以便调试
+                // 记录完整的请求信息以便调试（不截断）
                 tracing::error!(
                     status = %status,
                     response_body = %body,
-                    request_body_len = request_body.len(),
-                    request_body_preview = %Self::truncate_for_log(request_body, 2000),
+                    request_url = %url,
+                    request_headers = %Self::format_headers_for_log(&headers_for_log),
+                    request_body = %request_body,
                     "400 Bad Request - 请求格式错误"
                 );
                 anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
@@ -654,15 +660,31 @@ impl KiroProvider {
             .is_some_and(|v| v == "MODEL_TEMPORARILY_UNAVAILABLE")
     }
 
-    /// 截断字符串用于日志输出，避免日志过长
-    /// 使用 floor_char_boundary 安全截断，避免在多字节字符中间截断导致 panic
-    fn truncate_for_log(s: &str, max_len: usize) -> String {
-        if s.len() <= max_len {
-            s.to_string()
-        } else {
-            let end = s.floor_char_boundary(max_len);
-            format!("{}...[truncated, total {} bytes]", &s[..end], s.len())
-        }
+    /// 格式化 HeaderMap 为可读字符串（用于日志输出）
+    /// 敏感头部（Authorization）会被脱敏处理
+    fn format_headers_for_log(headers: &HeaderMap) -> String {
+        headers
+            .iter()
+            .map(|(name, value)| {
+                let value_str = value.to_str().unwrap_or("<binary>");
+                // 脱敏 Authorization 头
+                if name.as_str().eq_ignore_ascii_case("authorization") {
+                    let masked = if value_str.len() > 20 {
+                        format!(
+                            "{}...{}",
+                            &value_str[..10],
+                            &value_str[value_str.len() - 6..]
+                        )
+                    } else {
+                        "***".to_string()
+                    };
+                    format!("{}: {}", name, masked)
+                } else {
+                    format!("{}: {}", name, value_str)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
