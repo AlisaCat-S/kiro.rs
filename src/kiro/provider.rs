@@ -650,19 +650,46 @@ impl KiroProvider {
         }))
     }
 
-    /// 动态注入当前凭据的 profile_arn 到请求体
+    /// 根据认证方式处理请求体中的 profileArn 字段
     ///
-    /// 解决 IDC 凭据 403 问题：IDC 凭据的 Token 刷新不返回 profile_arn，
-    /// 但 API 调用需要 profile_arn 与 Bearer Token 匹配。
+    /// 参考 CLIProxyAPIPlus 的 getEffectiveProfileArn 实现：
+    /// - AWS SSO OIDC (Builder ID/IDC) 用户**不需要** profileArn，发送它会导致 403 错误
+    /// - 只有 Kiro Desktop (social auth) 用户需要 profileArn
     ///
     /// # 行为
-    /// - 如果凭据有 profile_arn，覆盖请求体中的 profileArn 字段
-    /// - 如果凭据没有 profile_arn，保持请求体不变
+    /// - 如果是 builder-id 或 idc 认证：移除请求体中的 profileArn 字段
+    /// - 如果是 social 认证且凭据有 profile_arn：注入/覆盖 profileArn 字段
+    /// - 其他情况：保持请求体不变
     fn inject_profile_arn(
         request_body: &str,
         credentials: &crate::kiro::model::credentials::KiroCredentials,
     ) -> anyhow::Result<String> {
-        // 凭据没有 profile_arn 时，直接返回原始请求体
+        // 检查认证方式
+        let auth_method = credentials.auth_method.as_deref();
+
+        // AWS SSO OIDC (Builder ID/IDC) - 不需要 profileArn，发送会导致 403
+        // 同时检查 client_id + client_secret 的存在（AWS SSO OIDC 的特征）
+        let is_aws_sso_oidc = matches!(auth_method, Some("builder-id") | Some("idc"))
+            || (credentials.client_id.is_some() && credentials.client_secret.is_some());
+
+        if is_aws_sso_oidc {
+            // 解析请求体，移除 profileArn 字段
+            let mut request: serde_json::Value = serde_json::from_str(request_body)?;
+
+            if let Some(obj) = request.as_object_mut() {
+                if obj.remove("profileArn").is_some() {
+                    tracing::debug!(
+                        "已移除 profileArn 字段（auth_method={:?}，AWS SSO OIDC 不需要）",
+                        auth_method
+                    );
+                }
+            }
+
+            return Ok(serde_json::to_string(&request)?);
+        }
+
+        // Social auth - 需要 profileArn
+        // 凭据没有 profile_arn 时，保持请求体不变
         let Some(profile_arn) = &credentials.profile_arn else {
             return Ok(request_body.to_string());
         };
@@ -875,10 +902,11 @@ mod tests {
     }
 
     #[test]
-    fn test_inject_profile_arn_with_credential_arn() {
-        // 凭据有 profile_arn 时，应覆盖请求体中的 profileArn
+    fn test_inject_profile_arn_with_social_auth() {
+        // Social 认证且凭据有 profile_arn 时，应覆盖请求体中的 profileArn
         let mut credentials = KiroCredentials::default();
-        credentials.profile_arn = Some("arn:aws:sso::111111111:profile/idc-profile".to_string());
+        credentials.auth_method = Some("social".to_string());
+        credentials.profile_arn = Some("arn:aws:sso::111111111:profile/social-profile".to_string());
 
         let request_body =
             r#"{"conversationState":{},"profileArn":"arn:aws:sso::999999999:profile/old"}"#;
@@ -887,14 +915,65 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(
             parsed["profileArn"].as_str().unwrap(),
-            "arn:aws:sso::111111111:profile/idc-profile"
+            "arn:aws:sso::111111111:profile/social-profile"
         );
     }
 
     #[test]
+    fn test_inject_profile_arn_idc_removes_field() {
+        // IDC 认证时，应移除请求体中的 profileArn 字段
+        let mut credentials = KiroCredentials::default();
+        credentials.auth_method = Some("idc".to_string());
+        credentials.profile_arn = Some("arn:aws:sso::111111111:profile/idc-profile".to_string());
+
+        let request_body =
+            r#"{"conversationState":{},"profileArn":"arn:aws:sso::999999999:profile/old"}"#;
+        let result = KiroProvider::inject_profile_arn(request_body, &credentials).unwrap();
+
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        // profileArn 应被移除
+        assert!(parsed.get("profileArn").is_none());
+        // 其他字段应保留
+        assert!(parsed.get("conversationState").is_some());
+    }
+
+    #[test]
+    fn test_inject_profile_arn_builder_id_removes_field() {
+        // Builder ID 认证时，应移除请求体中的 profileArn 字段
+        let mut credentials = KiroCredentials::default();
+        credentials.auth_method = Some("builder-id".to_string());
+
+        let request_body =
+            r#"{"conversationState":{},"profileArn":"arn:aws:sso::999999999:profile/old"}"#;
+        let result = KiroProvider::inject_profile_arn(request_body, &credentials).unwrap();
+
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        // profileArn 应被移除
+        assert!(parsed.get("profileArn").is_none());
+    }
+
+    #[test]
+    fn test_inject_profile_arn_aws_sso_oidc_by_client_credentials() {
+        // 有 client_id + client_secret 时（AWS SSO OIDC 特征），应移除 profileArn
+        let mut credentials = KiroCredentials::default();
+        credentials.client_id = Some("client123".to_string());
+        credentials.client_secret = Some("secret456".to_string());
+        credentials.profile_arn = Some("arn:aws:sso::111111111:profile/test".to_string());
+
+        let request_body =
+            r#"{"conversationState":{},"profileArn":"arn:aws:sso::999999999:profile/old"}"#;
+        let result = KiroProvider::inject_profile_arn(request_body, &credentials).unwrap();
+
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        // profileArn 应被移除
+        assert!(parsed.get("profileArn").is_none());
+    }
+
+    #[test]
     fn test_inject_profile_arn_without_credential_arn() {
-        // 凭据没有 profile_arn 时，应保持请求体不变
-        let credentials = KiroCredentials::default();
+        // Social 认证但凭据没有 profile_arn 时，应保持请求体不变
+        let mut credentials = KiroCredentials::default();
+        credentials.auth_method = Some("social".to_string());
         assert!(credentials.profile_arn.is_none());
 
         let request_body =
@@ -907,8 +986,9 @@ mod tests {
 
     #[test]
     fn test_inject_profile_arn_adds_missing_field() {
-        // 请求体没有 profileArn 字段时，应添加
+        // Social 认证且请求体没有 profileArn 字段时，应添加
         let mut credentials = KiroCredentials::default();
+        credentials.auth_method = Some("social".to_string());
         credentials.profile_arn = Some("arn:aws:sso::222222222:profile/new".to_string());
 
         let request_body = r#"{"conversationState":{"conversationId":"test"}}"#;
