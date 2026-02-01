@@ -2,11 +2,20 @@
 //!
 //! 负责 Token 过期检测和刷新，支持 Social 和 IdC 认证方式
 //! 支持单凭据 (TokenManager) 和多凭据 (MultiTokenManager) 管理
+//!
+//! ## 增强特性
+//!
+//! - **多维度设备指纹**: 每个凭据生成独立的设备指纹，模拟真实客户端
+//! - **后台 Token 刷新**: 定期检查并预刷新即将过期的 Token
+//! - **精细化速率限制**: 每日请求限制、请求间隔控制、指数退避
+//! - **冷却管理**: 分类管理不同原因的冷却状态
+//! - **优雅降级**: Token 刷新失败时使用现有 Token
 
 use anyhow::bail;
 use chrono::{DateTime, Duration, Utc};
 use parking_lot::Mutex;
 use serde::Serialize;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use tokio::sync::Mutex as TokioMutex;
 
@@ -16,12 +25,18 @@ use std::collections::HashMap;
 
 use crate::http_client::{ProxyConfig, build_client};
 use crate::kiro::affinity::UserAffinityManager;
+use crate::kiro::background_refresh::{
+    BackgroundRefreshConfig, BackgroundRefresher, RefreshResult,
+};
+use crate::kiro::cooldown::{CooldownManager, CooldownReason};
+use crate::kiro::fingerprint::Fingerprint;
 use crate::kiro::machine_id;
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::model::token_refresh::{
     IdcRefreshRequest, IdcRefreshResponse, RefreshRequest, RefreshResponse,
 };
 use crate::kiro::model::usage_limits::UsageLimitsResponse;
+use crate::kiro::rate_limiter::{RateLimitConfig, RateLimiter};
 use crate::model::config::Config;
 
 /// Token 管理器
@@ -361,32 +376,84 @@ async fn refresh_idc_token(
     Ok(new_credentials)
 }
 
-/// 通过 ListProfiles API 获取 profileArn
+/// 通过 ListProfiles 或 ListAvailableCustomizations API 获取 profileArn
 ///
 /// IDC 凭据的 Token 刷新不返回 profileArn，需要通过此 API 获取
-/// 参考 CLIProxyAPIPlus 的实现
+/// 参考 CLIProxyAPIPlus 的实现：先尝试 ListProfiles，失败则回退到 ListAvailableCustomizations
 async fn fetch_profile_arn(
     access_token: &str,
     region: &str,
     proxy: Option<&ProxyConfig>,
     tls_backend: crate::model::config::TlsBackend,
 ) -> anyhow::Result<String> {
-    tracing::debug!("正在通过 ListProfiles API 获取 profileArn...");
-
     let client = build_client(proxy, 30, tls_backend)?;
 
-    // 构建请求体
+    // CLIProxyAPIPlus 使用固定的 us-east-1 端点
+    // 但我们支持动态 region，先尝试用户配置的 region，失败则回退到 us-east-1
+    let regions_to_try = if region == "us-east-1" {
+        vec![region.to_string()]
+    } else {
+        vec![region.to_string(), "us-east-1".to_string()]
+    };
+
+    let mut last_error = None;
+
+    for try_region in &regions_to_try {
+        let endpoint = format!("https://codewhisperer.{}.amazonaws.com", try_region);
+
+        // 1. 先尝试 ListProfiles API
+        match try_list_profiles(&client, &endpoint, access_token).await {
+            Ok(arn) => {
+                tracing::info!(
+                    "通过 ListProfiles API 获取 profileArn 成功 (region={})",
+                    try_region
+                );
+                return Ok(arn);
+            }
+            Err(e) => {
+                tracing::debug!("ListProfiles API 失败 (region={}): {}", try_region, e);
+                #[allow(unused_assignments)]
+                {
+                    last_error = Some(e);
+                }
+            }
+        }
+
+        // 2. 回退到 ListAvailableCustomizations API
+        match try_list_available_customizations(&client, &endpoint, access_token).await {
+            Ok(arn) => {
+                tracing::info!(
+                    "通过 ListAvailableCustomizations API 获取 profileArn 成功 (region={})",
+                    try_region
+                );
+                return Ok(arn);
+            }
+            Err(e) => {
+                tracing::debug!(
+                    "ListAvailableCustomizations API 失败 (region={}): {}",
+                    try_region,
+                    e
+                );
+                last_error = Some(e);
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("无法获取 profileArn")))
+}
+
+/// 尝试通过 ListProfiles API 获取 profileArn
+async fn try_list_profiles(
+    client: &reqwest::Client,
+    endpoint: &str,
+    access_token: &str,
+) -> anyhow::Result<String> {
     let payload = serde_json::json!({
         "origin": "AI_EDITOR"
     });
 
-    // 根据 region 构建 CodeWhisperer API 端点
-    // 注意：CodeWhisperer API 使用 codewhisperer.{region}.amazonaws.com 格式
-    let endpoint = format!("https://codewhisperer.{}.amazonaws.com", region);
-
-    // 调用 ListProfiles API
     let response = client
-        .post(&endpoint)
+        .post(endpoint)
         .header("Content-Type", "application/x-amz-json-1.0")
         .header("x-amz-target", "AmazonCodeWhispererService.ListProfiles")
         .header("Authorization", format!("Bearer {}", access_token))
@@ -398,13 +465,10 @@ async fn fetch_profile_arn(
     let status = response.status();
     if !status.is_success() {
         let body_text = response.text().await.unwrap_or_default();
-        bail!("ListProfiles API 调用失败: {} {}", status, body_text);
+        bail!("ListProfiles: {} {}", status, body_text);
     }
 
     let body_text = response.text().await?;
-    tracing::debug!("ListProfiles 响应: {}", body_text);
-
-    // 解析响应
     let result: serde_json::Value = serde_json::from_str(&body_text)?;
 
     // 优先使用 profileArn 字段
@@ -424,6 +488,56 @@ async fn fetch_profile_arn(
     }
 
     bail!("ListProfiles 响应中未找到 profileArn")
+}
+
+/// 尝试通过 ListAvailableCustomizations API 获取 profileArn
+/// 这是 CLIProxyAPIPlus 的回退方案
+async fn try_list_available_customizations(
+    client: &reqwest::Client,
+    endpoint: &str,
+    access_token: &str,
+) -> anyhow::Result<String> {
+    let payload = serde_json::json!({});
+
+    let response = client
+        .post(endpoint)
+        .header("Content-Type", "application/x-amz-json-1.0")
+        .header(
+            "x-amz-target",
+            "AmazonCodeWhispererService.ListAvailableCustomizations",
+        )
+        .header("Authorization", format!("Bearer {}", access_token))
+        .header("Accept", "application/json")
+        .json(&payload)
+        .send()
+        .await?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body_text = response.text().await.unwrap_or_default();
+        bail!("ListAvailableCustomizations: {} {}", status, body_text);
+    }
+
+    let body_text = response.text().await?;
+    let result: serde_json::Value = serde_json::from_str(&body_text)?;
+
+    // ListAvailableCustomizations 响应直接包含 profileArn 字段
+    if let Some(profile_arn) = result.get("profileArn").and_then(|v| v.as_str())
+        && !profile_arn.is_empty()
+    {
+        return Ok(profile_arn.to_string());
+    }
+
+    // 也检查 customizations 数组
+    if let Some(customizations) = result.get("customizations").and_then(|v| v.as_array())
+        && let Some(first) = customizations.first()
+        && let Some(arn) = first.get("arn").and_then(|v| v.as_str())
+        && !arn.is_empty()
+    {
+        return Ok(arn.to_string());
+    }
+
+    bail!("ListAvailableCustomizations 响应中未找到 profileArn")
 }
 
 /// getUsageLimits API 所需的 x-amz-user-agent header 前缀
@@ -529,6 +643,7 @@ pub enum DisableReason {
 }
 
 /// 单个凭据条目的状态
+#[allow(dead_code)]
 struct CredentialEntry {
     /// 凭据唯一 ID
     id: u64,
@@ -542,6 +657,8 @@ struct CredentialEntry {
     auto_heal_reason: Option<AutoHealReason>,
     /// 禁用原因（公共 API 展示用）
     disable_reason: Option<DisableReason>,
+    /// 设备指纹（每个凭据独立）
+    fingerprint: Fingerprint,
 }
 
 /// 自愈原因（内部使用，用于判断是否可自动恢复）
@@ -637,6 +754,15 @@ const LOW_BALANCE_THRESHOLD: f64 = 1.0;
 ///
 /// 支持多个凭据的管理，实现负载均衡 + 故障转移策略
 /// 故障统计基于 API 调用结果，而非 Token 刷新结果
+///
+/// ## 增强特性
+///
+/// - **多维度设备指纹**: 每个凭据生成独立的设备指纹
+/// - **后台 Token 刷新**: 定期预刷新即将过期的 Token
+/// - **精细化速率限制**: 每日请求限制、请求间隔控制
+/// - **冷却管理**: 分类管理不同原因的冷却状态
+/// - **优雅降级**: Token 刷新失败时使用现有 Token
+#[allow(dead_code)]
 pub struct MultiTokenManager {
     config: Config,
     proxy: Option<ProxyConfig>,
@@ -658,6 +784,12 @@ pub struct MultiTokenManager {
     affinity: UserAffinityManager,
     /// 余额缓存（用于负载均衡和故障转移时选择最优凭据）
     balance_cache: Mutex<HashMap<u64, CachedBalance>>,
+    /// 速率限制器
+    rate_limiter: RateLimiter,
+    /// 冷却管理器
+    cooldown_manager: CooldownManager,
+    /// 后台刷新器
+    background_refresher: Option<Arc<BackgroundRefresher>>,
 }
 
 /// 每个凭据最大 API 调用失败次数
@@ -723,6 +855,15 @@ impl MultiTokenManager {
                     cred.machine_id = Some(machine_id);
                     has_new_machine_ids = true;
                 }
+                // 为每个凭据生成独立的设备指纹
+                let fingerprint_seed = cred
+                    .refresh_token
+                    .as_deref()
+                    .or(cred.machine_id.as_deref())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| format!("credential-{}", id));
+                let fingerprint = Fingerprint::generate_from_seed(&fingerprint_seed);
+
                 CredentialEntry {
                     id,
                     credentials: cred,
@@ -730,6 +871,7 @@ impl MultiTokenManager {
                     disabled: false,
                     auto_heal_reason: None,
                     disable_reason: None,
+                    fingerprint,
                 }
             })
             .collect();
@@ -776,6 +918,9 @@ impl MultiTokenManager {
             global_recovery_time: Mutex::new(None),
             affinity: UserAffinityManager::new(),
             balance_cache: Mutex::new(initial_cache),
+            rate_limiter: RateLimiter::new(RateLimitConfig::default()),
+            cooldown_manager: CooldownManager::new(),
+            background_refresher: None,
         };
 
         // 如果有新分配的 ID 或新生成的 machineId，立即持久化到配置文件
@@ -1271,6 +1416,8 @@ impl MultiTokenManager {
     /// - 源文件是多凭据格式（数组）
     /// - credentials_path 已设置
     ///
+    /// 注意：调用方应确保适当的同步机制，避免并发写入导致数据丢失。
+    ///
     /// # Returns
     /// - `Ok(true)` - 成功写入文件
     /// - `Ok(false)` - 跳过写入（非多凭据格式或无路径配置）
@@ -1284,32 +1431,34 @@ impl MultiTokenManager {
         }
 
         let path = match &self.credentials_path {
-            Some(p) => p,
+            Some(p) => p.clone(),
             None => return Ok(false),
         };
 
-        // 收集所有凭据
-        let credentials: Vec<KiroCredentials> = {
+        // 在持有 entries 锁的情况下收集凭据并序列化
+        // 这确保了快照的一致性
+        let json = {
             let entries = self.entries.lock();
-            entries
+            let credentials: Vec<KiroCredentials> = entries
                 .iter()
                 .map(|e| {
                     let mut cred = e.credentials.clone();
                     cred.canonicalize_auth_method();
                     cred
                 })
-                .collect()
+                .collect();
+            serde_json::to_string_pretty(&credentials).context("序列化凭据失败")?
         };
 
-        // 序列化为 pretty JSON
-        let json = serde_json::to_string_pretty(&credentials).context("序列化凭据失败")?;
-
         // 写入文件（在 Tokio runtime 内使用 block_in_place 避免阻塞 worker）
+        // 注意：std::fs::write 不是原子操作，为避免并发调用导致的覆盖问题，
+        // 调用方应确保适当的同步机制
         if tokio::runtime::Handle::try_current().is_ok() {
-            tokio::task::block_in_place(|| std::fs::write(path, &json))
+            tokio::task::block_in_place(|| std::fs::write(&path, &json))
                 .with_context(|| format!("回写凭据文件失败: {:?}", path))?;
         } else {
-            std::fs::write(path, &json).with_context(|| format!("回写凭据文件失败: {:?}", path))?;
+            std::fs::write(&path, &json)
+                .with_context(|| format!("回写凭据文件失败: {:?}", path))?;
         }
 
         tracing::debug!("已回写凭据到文件: {:?}", path);
@@ -1788,6 +1937,15 @@ impl MultiTokenManager {
         validated_cred.region = new_cred.region;
         validated_cred.machine_id = new_cred.machine_id;
 
+        // 为新凭据生成设备指纹
+        let fingerprint_seed = validated_cred
+            .refresh_token
+            .as_deref()
+            .or(validated_cred.machine_id.as_deref())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("credential-{}", new_id));
+        let fingerprint = Fingerprint::generate_from_seed(&fingerprint_seed);
+
         {
             let mut entries = self.entries.lock();
             entries.push(CredentialEntry {
@@ -1797,6 +1955,7 @@ impl MultiTokenManager {
                 disabled: false,
                 auto_heal_reason: None,
                 disable_reason: None,
+                fingerprint,
             });
         }
 
@@ -1866,6 +2025,205 @@ impl MultiTokenManager {
                 })
                 .unwrap_or(false)
         })
+    }
+
+    // ========================================================================
+    // 增强特性：设备指纹、速率限制、冷却管理、后台刷新
+    // ========================================================================
+
+    #[allow(dead_code)]
+    /// 获取凭据的设备指纹
+    pub fn get_fingerprint(&self, id: u64) -> Option<Fingerprint> {
+        let entries = self.entries.lock();
+        entries
+            .iter()
+            .find(|e| e.id == id)
+            .map(|e| e.fingerprint.clone())
+    }
+
+    #[allow(dead_code)]
+    /// 获取速率限制器引用
+    pub fn rate_limiter(&self) -> &RateLimiter {
+        &self.rate_limiter
+    }
+
+    /// 获取冷却管理器引用
+    #[allow(dead_code)]
+    pub fn cooldown_manager(&self) -> &CooldownManager {
+        &self.cooldown_manager
+    }
+
+    /// 检查凭据是否可用（综合检查：未禁用、未冷却、未超速率限制）
+    #[allow(dead_code)]
+    pub fn is_credential_available(&self, id: u64) -> bool {
+        // 检查是否禁用
+        let is_disabled = {
+            let entries = self.entries.lock();
+            entries
+                .iter()
+                .find(|e| e.id == id)
+                .map(|e| e.disabled)
+                .unwrap_or(true)
+        };
+        if is_disabled {
+            return false;
+        }
+
+        // 检查冷却状态
+        if !self.cooldown_manager.is_available(id) {
+            return false;
+        }
+
+        // 检查速率限制
+        self.rate_limiter.check_rate_limit(id).is_ok()
+    }
+
+    /// 设置凭据冷却（带原因分类）
+    #[allow(dead_code)]
+    pub fn set_credential_cooldown(&self, id: u64, reason: CooldownReason) -> std::time::Duration {
+        self.cooldown_manager.set_cooldown(id, reason)
+    }
+
+    /// 清除凭据冷却
+    #[allow(dead_code)]
+    pub fn clear_credential_cooldown(&self, id: u64) -> bool {
+        self.cooldown_manager.clear_cooldown(id)
+    }
+
+    /// 获取即将过期的凭据 ID 列表
+    ///
+    /// # Arguments
+    /// * `minutes_before_expiry` - 过期前多少分钟视为即将过期
+    #[allow(dead_code)]
+    pub fn get_expiring_credential_ids(&self, minutes_before_expiry: i64) -> Vec<u64> {
+        let entries = self.entries.lock();
+        entries
+            .iter()
+            .filter(|e| {
+                !e.disabled
+                    && is_token_expiring_within(&e.credentials, minutes_before_expiry)
+                        .unwrap_or(false)
+            })
+            .map(|e| e.id)
+            .collect()
+    }
+
+    /// 启动后台 Token 刷新任务
+    ///
+    /// 定期检查并预刷新即将过期的 Token，避免请求时的刷新延迟。
+    /// 返回 `BackgroundRefresher` 的 `Arc` 引用，调用方需要保持该引用以维持后台任务运行。
+    #[allow(dead_code)]
+    pub fn start_background_refresh(
+        self: &Arc<Self>,
+        config: BackgroundRefreshConfig,
+    ) -> Arc<BackgroundRefresher> {
+        let refresher = Arc::new(BackgroundRefresher::new(config.clone()));
+        let manager = Arc::clone(self);
+        let manager_for_ids = Arc::clone(self);
+
+        let refresh_before_mins = config.refresh_before_expiry_mins;
+
+        if let Err(e) = refresher.start(
+            move |id| {
+                let manager = Arc::clone(&manager);
+                Box::pin(async move {
+                    match manager.refresh_token_for_credential(id).await {
+                        Ok(_) => {
+                            tracing::debug!("后台刷新凭据 #{} Token 成功", id);
+                            true
+                        }
+                        Err(e) => {
+                            tracing::warn!("后台刷新凭据 #{} Token 失败: {}", id, e);
+                            false
+                        }
+                    }
+                })
+            },
+            move |mins| manager_for_ids.get_expiring_credential_ids(mins.max(refresh_before_mins)),
+        ) {
+            tracing::error!("启动后台刷新任务失败: {}", e);
+        }
+
+        tracing::info!("后台 Token 刷新任务已启动");
+        refresher
+    }
+
+    /// 刷新指定凭据的 Token（带优雅降级）
+    ///
+    /// 如果刷新失败但现有 Token 仍有效，返回现有 Token（优雅降级）
+    #[allow(dead_code)]
+    pub async fn refresh_token_for_credential(&self, id: u64) -> anyhow::Result<RefreshResult> {
+        let credentials = {
+            let entries = self.entries.lock();
+            entries
+                .iter()
+                .find(|e| e.id == id)
+                .map(|e| e.credentials.clone())
+                .ok_or_else(|| anyhow::anyhow!("凭据不存在: {}", id))?
+        };
+
+        // 尝试刷新
+        match refresh_token_with_id(&credentials, &self.config, self.proxy.as_ref(), id).await {
+            Ok(new_creds) => {
+                // 更新凭据
+                {
+                    let mut entries = self.entries.lock();
+                    if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
+                        entry.credentials = new_creds.clone();
+                    }
+                }
+
+                // 持久化
+                if let Err(e) = self.persist_credentials() {
+                    tracing::warn!("Token 刷新后持久化失败: {}", e);
+                }
+
+                let expires_at = new_creds.expires_at.unwrap_or_default();
+                Ok(RefreshResult::success(id, expires_at))
+            }
+            Err(e) => {
+                // 优雅降级：检查现有 Token 是否仍有效
+                if !is_token_expired(&credentials) {
+                    let expires_at = credentials.expires_at.unwrap_or_default();
+                    tracing::warn!(
+                        "凭据 #{} Token 刷新失败，使用现有 Token（优雅降级）: {}",
+                        id,
+                        e
+                    );
+                    Ok(RefreshResult::fallback(id, expires_at))
+                } else {
+                    // 设置冷却
+                    self.cooldown_manager
+                        .set_cooldown(id, CooldownReason::TokenRefreshFailed);
+                    Err(e)
+                }
+            }
+        }
+    }
+
+    /// 记录 API 调用成功（更新速率限制器）
+    #[allow(dead_code)]
+    pub fn record_api_success(&self, id: u64) {
+        self.report_success(id);
+        self.rate_limiter.record_success(id);
+    }
+
+    /// 记录 API 调用失败（更新速率限制器和冷却管理器）
+    #[allow(dead_code)]
+    pub fn record_api_failure(&self, id: u64, error_message: Option<&str>) -> bool {
+        let has_available = self.report_failure(id);
+
+        // 更新速率限制器
+        let backoff = self.rate_limiter.record_failure(id, error_message);
+        tracing::debug!("凭据 #{} 退避时间: {:?}", id, backoff);
+
+        has_available
+    }
+
+    /// 清理过期的冷却状态
+    #[allow(dead_code)]
+    pub fn cleanup_expired_cooldowns(&self) -> usize {
+        self.cooldown_manager.cleanup_expired()
     }
 }
 

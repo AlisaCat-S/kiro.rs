@@ -2,7 +2,63 @@
 
 ## [Unreleased]
 
+### Added
+- 新增多维度设备指纹系统 (`src/kiro/fingerprint.rs`)
+  - 每个凭据生成独立的确定性指纹，模拟真实 Kiro IDE 客户端
+  - 支持 10+ 维度设备信息：SDK 版本、Kiro 版本、Node.js 版本、操作系统、屏幕分辨率、CPU 核心数、时区等
+  - 提供 `user_agent()` 和 `x_amz_user_agent()` 方法构建请求头
+  - 参考 CLIProxyAPIPlus 实现，降低被检测风险
+
+- 新增精细化速率限制系统 (`src/kiro/rate_limiter.rs`)
+  - 每日请求限制（默认 500 次/天）
+  - 请求间隔控制（1-2 秒 + 30% 抖动）
+  - 指数退避策略（30s → 5min，倍数 1.5）
+  - 暂停检测（关键词匹配：suspended, banned, quota exceeded 等）
+
+- 新增独立冷却管理模块 (`src/kiro/cooldown.rs`)
+  - 分类冷却原因（7 种类型：速率限制、账户暂停、配额耗尽、Token 刷新失败等）
+  - 差异化冷却时长：短冷却（1-5 分钟）vs 长冷却（1-24 小时）
+  - 递增冷却机制（连续触发时延长冷却时间）
+  - 自动清理过期冷却
+
+- 新增后台 Token 刷新模块 (`src/kiro/background_refresh.rs`)
+  - 独立后台任务定期检查即将过期的 Token
+  - 支持批量并发刷新（信号量控制）
+  - 可配置检查间隔、批处理大小、并发数
+  - 优雅关闭机制
+
+- `MultiTokenManager` 新增增强方法
+  - `get_fingerprint()`: 获取凭据的设备指纹
+  - `is_credential_available()`: 综合检查凭据可用性（未禁用、未冷却、未超速率限制）
+  - `set_credential_cooldown()` / `clear_credential_cooldown()`: 冷却管理
+  - `get_expiring_credential_ids()`: 获取即将过期的凭据列表
+  - `start_background_refresh()`: 启动后台 Token 刷新任务
+  - `refresh_token_for_credential()`: 带优雅降级的 Token 刷新
+  - `record_api_success()` / `record_api_failure()`: 更新速率限制器状态
+
+### Changed
+- `CredentialEntry` 结构体新增 `fingerprint` 字段，每个凭据独立生成设备指纹
+
 ### Fixed
+- 修复 IDC 凭据 `fetch_profile_arn` 在某些 region 返回 `UnknownOperationException` 的问题
+  - 新增 `ListAvailableCustomizations` API 作为 `ListProfiles` 的回退方案
+  - 支持多 region 尝试：先尝试用户配置的 region，失败则回退到 `us-east-1`
+  - 涉及文件：`src/kiro/token_manager.rs`
+
+- 修复 `start_background_refresh` 后台刷新器生命周期问题（Codex Review P1）
+  - 问题：`refresher` 作为局部变量在函数返回后被 drop，导致后台任务立即停止
+  - 解决：方法现在返回 `Arc<BackgroundRefresher>`，调用方需保持引用以维持任务运行
+  - 涉及文件：`src/kiro/token_manager.rs`
+
+- 修复 `calculate_backoff` 退避时间可能超过配置上限的问题（Codex Review P2）
+  - 问题：添加抖动后未再次进行上限约束，可能导致实际等待时间超过 `backoff_max_ms`
+  - 解决：在添加抖动后再进行 `.min(max)` 约束
+  - 涉及文件：`src/kiro/rate_limiter.rs`
+
+- 改进 `persist_credentials` 并发写入安全性（Codex Review P1）
+  - 问题：在锁外执行文件写入可能导致并发写入时旧快照覆盖新数据
+  - 解决：在持有 entries 锁的情况下完成序列化，确保快照一致性
+  - 涉及文件：`src/kiro/token_manager.rs`
 - 修复 IDC 凭据返回 403 "The bearer token included in the request is invalid" 的问题
   - 根本原因：`profile_arn` 只从第一个凭据获取并存储在全局 `AppState` 中，当使用 IDC 凭据时，Bearer Token 来自 IDC 凭据，但 `profile_arn` 来自第一个凭据（可能是 Social 类型），导致 Token 和 profile_arn 不匹配
   - 解决方案 1：在 `call_api_with_retry` 中动态注入当前凭据的 `profile_arn`，确保 Token 和 profile_arn 始终匹配
