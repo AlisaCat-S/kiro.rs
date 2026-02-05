@@ -279,6 +279,7 @@ impl KiroProvider {
                 }
             };
             // 克隆 headers 用于错误日志（原 headers 会被 move）
+            #[cfg(feature = "sensitive-logs")]
             let headers_for_log = headers.clone();
 
             // 发送请求
@@ -342,13 +343,22 @@ impl KiroProvider {
                         "MCP 400 Bad Request - 输入上下文过长"
                     );
                 } else {
-                    // 其他 400 错误：记录完整的请求信息以便调试
+                    // 其他 400 错误：记录请求信息以便调试
+                    #[cfg(feature = "sensitive-logs")]
                     tracing::error!(
                         status = %status,
                         response_body = %body,
                         request_url = %url,
                         request_headers = %Self::format_headers_for_log(&headers_for_log),
                         request_body = %request_body,
+                        "MCP 400 Bad Request - 请求格式错误"
+                    );
+                    #[cfg(not(feature = "sensitive-logs"))]
+                    tracing::error!(
+                        status = %status,
+                        response_body = %body,
+                        request_url = %url,
+                        request_body_bytes = request_body.len(),
                         "MCP 400 Bad Request - 请求格式错误"
                     );
                 }
@@ -462,6 +472,7 @@ impl KiroProvider {
                 }
             };
             // 克隆 headers 用于错误日志（原 headers 会被 move）
+            #[cfg(feature = "sensitive-logs")]
             let headers_for_log = headers.clone();
 
             // 动态注入当前凭据的 profile_arn（修复 IDC 凭据 403 问题）
@@ -561,13 +572,22 @@ impl KiroProvider {
                         "400 Bad Request - 输入上下文过长"
                     );
                 } else {
-                    // 其他 400 错误：记录完整的请求信息以便调试
+                    // 其他 400 错误：记录请求信息以便调试
+                    #[cfg(feature = "sensitive-logs")]
                     tracing::error!(
                         status = %status,
                         response_body = %body,
                         request_url = %url,
                         request_headers = %Self::format_headers_for_log(&headers_for_log),
                         request_body = %final_body_for_log,
+                        "400 Bad Request - 请求格式错误"
+                    );
+                    #[cfg(not(feature = "sensitive-logs"))]
+                    tracing::error!(
+                        status = %status,
+                        response_body = %body,
+                        request_url = %url,
+                        request_body_bytes = final_body_for_log.len(),
                         "400 Bad Request - 请求格式错误"
                     );
                 }
@@ -857,6 +877,7 @@ impl KiroProvider {
 
     /// 格式化 HeaderMap 为可读字符串（用于日志输出）
     /// 敏感头部（Authorization）会被脱敏处理
+    #[cfg(feature = "sensitive-logs")]
     fn format_headers_for_log(headers: &HeaderMap) -> String {
         headers
             .iter()
