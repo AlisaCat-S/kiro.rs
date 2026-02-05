@@ -2,6 +2,7 @@
 
 use std::convert::Infallible;
 
+use anyhow::Error;
 use crate::kiro::model::events::Event;
 use crate::kiro::model::requests::kiro::KiroRequest;
 use crate::kiro::parser::decoder::EventStreamDecoder;
@@ -28,7 +29,46 @@ use super::types::{
 };
 use super::websearch;
 
+fn is_input_too_long_error(err: &Error) -> bool {
+    // provider.rs 在遇到上游返回的 input-too-long 场景时，会在错误中保留以下关键字：
+    // - CONTENT_LENGTH_EXCEEDS_THRESHOLD
+    // - Input is too long
+    //
+    // 这类错误是确定性的请求问题（缩短输入才可恢复），不应返回 5xx（会诱发客户端重试）。
+    let s = err.to_string();
+    s.contains("CONTENT_LENGTH_EXCEEDS_THRESHOLD") || s.contains("Input is too long")
+}
+
+fn map_kiro_provider_error_to_response(request_body: &str, err: Error) -> Response {
+    if is_input_too_long_error(&err) {
+        tracing::warn!(
+            kiro_request_body_bytes = request_body.len(),
+            error = %err,
+            "上游拒绝请求：输入上下文过长（不应重试）"
+        );
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(
+                "invalid_request_error",
+                "Input is too long (CONTENT_LENGTH_EXCEEDS_THRESHOLD). Reduce conversation history/system/tools; retrying the same request will not help.",
+            )),
+        )
+            .into_response();
+    }
+
+    tracing::error!("Kiro API 调用失败: {}", err);
+    (
+        StatusCode::BAD_GATEWAY,
+        Json(ErrorResponse::new(
+            "api_error",
+            format!("上游 API 调用失败: {}", err),
+        )),
+    )
+        .into_response()
+}
+
 /// 对 user_id 进行掩码处理，保护隐私
+
 fn mask_user_id(user_id: Option<&str>) -> String {
     match user_id {
         Some(id) if id.len() > 25 => format!("{}***{}", &id[..13], &id[id.len() - 8..]),
@@ -242,17 +282,7 @@ async fn handle_stream_request(
     // 调用 Kiro API（支持多凭据故障转移）
     let response = match provider.call_api_stream(request_body, user_id).await {
         Ok(resp) => resp,
-        Err(e) => {
-            tracing::error!("Kiro API 调用失败: {}", e);
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(ErrorResponse::new(
-                    "api_error",
-                    format!("上游 API 调用失败: {}", e),
-                )),
-            )
-                .into_response();
-        }
+        Err(e) => return map_kiro_provider_error_to_response(request_body, e),
     };
 
     // 创建流处理上下文
@@ -390,17 +420,7 @@ async fn handle_non_stream_request(
     // 调用 Kiro API（支持多凭据故障转移）
     let response = match provider.call_api(request_body, user_id).await {
         Ok(resp) => resp,
-        Err(e) => {
-            tracing::error!("Kiro API 调用失败: {}", e);
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(ErrorResponse::new(
-                    "api_error",
-                    format!("上游 API 调用失败: {}", e),
-                )),
-            )
-                .into_response();
-        }
+        Err(e) => return map_kiro_provider_error_to_response(request_body, e),
     };
 
     // 读取响应体
@@ -736,17 +756,7 @@ async fn handle_stream_request_buffered(
     // 调用 Kiro API（支持多凭据故障转移）
     let response = match provider.call_api_stream(request_body, user_id).await {
         Ok(resp) => resp,
-        Err(e) => {
-            tracing::error!("Kiro API 调用失败: {}", e);
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(ErrorResponse::new(
-                    "api_error",
-                    format!("上游 API 调用失败: {}", e),
-                )),
-            )
-                .into_response();
-        }
+        Err(e) => return map_kiro_provider_error_to_response(request_body, e),
     };
 
     // 创建缓冲流处理上下文
