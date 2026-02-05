@@ -57,6 +57,10 @@ pub fn build_client(
         // 连接池空闲超时
         .pool_idle_timeout(Duration::from_secs(90));
 
+    // 仅支持显式代理配置（config.proxy_url），避免隐式读取系统代理带来不可控行为。
+    // 在 macOS 上，reqwest 的系统代理探测依赖 SystemConfiguration，某些环境下可能触发 panic。
+    builder = builder.no_proxy();
+
     // tcp_user_timeout 仅在 Linux/Android/Fuchsia 上可用
     // 控制发送数据后等待 ACK 的最大时间，超时后强制关闭连接
     #[cfg(any(target_os = "linux", target_os = "android", target_os = "fuchsia"))]

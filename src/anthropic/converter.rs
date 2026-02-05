@@ -14,6 +14,50 @@ use crate::kiro::model::requests::tool::{
 
 use super::types::{ContentBlock, MessagesRequest, Thinking, Tool as AnthropicTool};
 
+fn non_empty_content_or_space(content: String, has_non_text_payload: bool) -> String {
+    // Kiro 上游在部分场景下会拒绝空 content（例如仅 tool_result / 仅 image 的消息）。
+    // 使用最小占位符可保持语义，同时规避 400 Improperly formed request。
+    if has_non_text_payload && content.trim().is_empty() {
+        return " ".to_string();
+    }
+    content
+}
+
+fn default_json_schema() -> serde_json::Value {
+    serde_json::json!({
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": true
+    })
+}
+
+fn normalize_json_schema(schema: serde_json::Value) -> serde_json::Value {
+    let mut schema = match schema {
+        serde_json::Value::Object(map) => serde_json::Value::Object(map),
+        _ => return default_json_schema(),
+    };
+
+    let Some(obj) = schema.as_object_mut() else {
+        return default_json_schema();
+    };
+
+    obj.entry("$schema".to_string()).or_insert_with(|| {
+        serde_json::Value::String("http://json-schema.org/draft-07/schema#".to_string())
+    });
+    obj.entry("type".to_string())
+        .or_insert_with(|| serde_json::Value::String("object".to_string()));
+    obj.entry("properties".to_string())
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    obj.entry("required".to_string())
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    obj.entry("additionalProperties".to_string())
+        .or_insert_with(|| serde_json::Value::Bool(true));
+
+    schema
+}
+
 /// 模型映射：将 Anthropic 模型名映射到 Kiro 模型 ID
 ///
 /// 按照用户要求：
@@ -180,13 +224,17 @@ pub fn convert_request(req: &MessagesRequest) -> Result<ConversionResult, Conver
     if !tools.is_empty() {
         context = context.with_tools(tools);
     }
-    if !validated_tool_results.is_empty() {
+    let has_tool_results = !validated_tool_results.is_empty();
+    if has_tool_results {
         context = context.with_tool_results(validated_tool_results);
     }
 
     // 12. 构建当前消息
     // 保留文本内容，即使有工具结果也不丢弃用户文本
-    let content = text_content;
+    let content = non_empty_content_or_space(
+        text_content,
+        !images.is_empty() || has_tool_results,
+    );
 
     let mut user_input = UserInputMessage::new(content, &model_id)
         .with_context(context)
@@ -453,18 +501,24 @@ fn convert_tools(tools: &Option<Vec<AnthropicTool>>) -> Vec<KiroTool> {
             !dominated
         })
         .map(|t| {
-            let description = t.description.clone();
+            let description = if t.description.trim().is_empty() {
+                format!("Tool: {}", t.name)
+            } else {
+                t.description.clone()
+            };
             // 限制描述长度为 10000 字符（安全截断 UTF-8，单次遍历）
             let description = match description.char_indices().nth(10000) {
                 Some((idx, _)) => description[..idx].to_string(),
                 None => description,
             };
 
+            let schema = normalize_json_schema(serde_json::json!(t.input_schema));
+
             KiroTool {
                 tool_specification: ToolSpecification {
                     name: t.name.clone(),
                     description,
-                    input_schema: InputSchema::from_json(serde_json::json!(t.input_schema)),
+                    input_schema: InputSchema::from_json(schema),
                 },
             }
         })
@@ -602,7 +656,10 @@ fn merge_user_messages(
         all_tool_results.extend(tool_results);
     }
 
-    let content = content_parts.join("\n");
+    let content = non_empty_content_or_space(
+        content_parts.join("\n"),
+        !all_images.is_empty() || !all_tool_results.is_empty(),
+    );
     // 保留文本内容，即使有工具结果也不丢弃用户文本
     let mut user_msg = UserMessage::new(&content, model_id);
 
@@ -1264,6 +1321,170 @@ mod tests {
 
         // 所有 web_search 工具都应被过滤
         assert!(converted.is_empty(), "所有 web_search 变体都应被过滤");
+    }
+
+    #[test]
+    fn test_convert_tools_fills_empty_description_and_normalizes_schema() {
+        use super::super::types::{Message as AnthropicMessage, Tool as AnthropicTool};
+        use std::collections::HashMap;
+
+        let mut input_schema = HashMap::new();
+        input_schema.insert("type".to_string(), serde_json::json!("object"));
+
+        let req = MessagesRequest {
+            model: "claude-sonnet-4".to_string(),
+            max_tokens: 128,
+            messages: vec![AnthropicMessage {
+                role: "user".to_string(),
+                content: serde_json::json!("hi"),
+            }],
+            stream: false,
+            system: None,
+            tools: Some(vec![AnthropicTool {
+                tool_type: None,
+                name: "mcp__ida-pro-mcp__patch_address_assembles".to_string(),
+                description: "".to_string(), // 上游可能拒绝空 description
+                input_schema,                // 故意不带 $schema 等字段
+                max_uses: None,
+            }]),
+            tool_choice: None,
+            thinking: None,
+            metadata: None,
+        };
+
+        let result = convert_request(&req).unwrap();
+        let tools = &result
+            .conversation_state
+            .current_message
+            .user_input_message
+            .user_input_message_context
+            .tools;
+
+        let tool = tools
+            .iter()
+            .find(|t| t.tool_specification.name == "mcp__ida-pro-mcp__patch_address_assembles")
+            .expect("转换后应包含该工具");
+
+        assert!(
+            !tool.tool_specification.description.trim().is_empty(),
+            "转换后的工具描述不应为空"
+        );
+        assert_eq!(
+            tool.tool_specification.input_schema.json["$schema"],
+            "http://json-schema.org/draft-07/schema#"
+        );
+        assert_eq!(tool.tool_specification.input_schema.json["type"], "object");
+    }
+
+    #[test]
+    fn test_current_message_content_is_non_empty_when_only_tool_result() {
+        use super::super::types::Message as AnthropicMessage;
+
+        // 构造典型 tool_use -> tool_result 链路，最后一条为 tool_result user 消息
+        let req = MessagesRequest {
+            model: "claude-sonnet-4".to_string(),
+            max_tokens: 128,
+            messages: vec![
+                AnthropicMessage {
+                    role: "user".to_string(),
+                    content: serde_json::json!("do it"),
+                },
+                AnthropicMessage {
+                    role: "assistant".to_string(),
+                    content: serde_json::json!([
+                        {"type": "tool_use", "id": "tool-1", "name": "read", "input": {"path": "/tmp/a"}}
+                    ]),
+                },
+                AnthropicMessage {
+                    role: "user".to_string(),
+                    content: serde_json::json!([
+                        {"type": "tool_result", "tool_use_id": "tool-1", "content": "ok"}
+                    ]),
+                },
+            ],
+            stream: false,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            thinking: None,
+            metadata: None,
+        };
+
+        let result = convert_request(&req).unwrap();
+        let content = &result
+            .conversation_state
+            .current_message
+            .user_input_message
+            .content;
+
+        assert!(
+            !content.is_empty(),
+            "仅 tool_result 的 user 消息应使用占位符避免空 content"
+        );
+        assert_eq!(content, " ");
+    }
+
+    #[test]
+    fn test_history_user_message_content_is_non_empty_when_only_tool_result() {
+        use super::super::types::Message as AnthropicMessage;
+
+        // 让 tool_result 进入 history：tool_result 后紧跟 assistant，然后用户继续提问
+        let req = MessagesRequest {
+            model: "claude-sonnet-4".to_string(),
+            max_tokens: 128,
+            messages: vec![
+                AnthropicMessage {
+                    role: "user".to_string(),
+                    content: serde_json::json!("do it"),
+                },
+                AnthropicMessage {
+                    role: "assistant".to_string(),
+                    content: serde_json::json!([
+                        {"type": "tool_use", "id": "tool-1", "name": "read", "input": {"path": "/tmp/a"}}
+                    ]),
+                },
+                AnthropicMessage {
+                    role: "user".to_string(),
+                    content: serde_json::json!([
+                        {"type": "tool_result", "tool_use_id": "tool-1", "content": "ok"}
+                    ]),
+                },
+                AnthropicMessage {
+                    role: "assistant".to_string(),
+                    content: serde_json::json!("done"),
+                },
+                AnthropicMessage {
+                    role: "user".to_string(),
+                    content: serde_json::json!("next"),
+                },
+            ],
+            stream: false,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            thinking: None,
+            metadata: None,
+        };
+
+        let result = convert_request(&req).unwrap();
+
+        let mut found = false;
+        for msg in &result.conversation_state.history {
+            let Message::User(user_msg) = msg else {
+                continue;
+            };
+            let ctx = &user_msg.user_input_message.user_input_message_context;
+            if ctx.tool_results.is_empty() {
+                continue;
+            }
+            found = true;
+            assert!(
+                !user_msg.user_input_message.content.is_empty(),
+                "history 中的 tool_result user 消息也需要占位符"
+            );
+            assert_eq!(user_msg.user_input_message.content, " ");
+        }
+        assert!(found, "测试数据应在 history 中包含 tool_results");
     }
 
     #[test]
