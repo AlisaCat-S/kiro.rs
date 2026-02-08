@@ -1,6 +1,5 @@
 /target
 
-
 /config.json
 /credentials.json
 /.idea
@@ -13,6 +12,8 @@
 /admin-ui/tsconfig.tsbuildinfo
 
 .claude/
+!.claude/skills/
+
 /credentials.*
 
 *.json

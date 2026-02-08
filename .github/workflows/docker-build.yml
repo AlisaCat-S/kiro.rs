@@ -10,8 +10,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  REGISTRY: ${{ secrets.ALIYUN_CR_REGISTRY }}
-  IMAGE_NAME: ${{ secrets.ALIYUN_CR_IMAGE }}
+  REGISTRY: crpi-i19l8zl0ugidq97v.cn-hangzhou.personal.cr.aliyuncs.com
+  IMAGE_NAME: bene/kiro-rs
 
 jobs:
   build_docker_image:
