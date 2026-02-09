@@ -1,6 +1,42 @@
 # Changelog
 
+## [v1.0.3] - 2026-02-09
+
+### Fixed
+- **opus4-6 上下文超限错误识别** (`src/anthropic/handlers.rs`)
+  - 将 `Improperly formed request` 纳入输入过长错误检测，返回 Claude Code 可识别的 `400 Input is too long` 而非 `502 Bad Gateway`
+- **Opus 4.6 模型 ID 移除时间日期** (`src/anthropic/handlers.rs`)
+  - `claude-opus-4-6-20260206` → `claude-opus-4-6`
+- **post_messages 借用冲突编译错误** (`src/anthropic/handlers.rs`)
+  - 将 `override_thinking_from_model_name` 调用移至 `user_id` 提取之前，修复 E0502 借用冲突
+
+### Added
+- **模型 "thinking" 后缀支持** (`src/anthropic/handlers.rs`, `src/anthropic/converter.rs`)
+  - 模型名含 `-thinking` 后缀时自动覆写 thinking 配置（opus4.6 用 adaptive + high effort，其他用 enabled）
+  - 模型列表新增 sonnet/opus4.5/opus4.6/haiku 的 thinking 变体
+
+### Docs
+- **README.md 补充输入压缩配置文档**
+  - 新增"输入压缩"章节，说明 5 层压缩管道机制和 10 个可配置参数
+
 ## [v1.0.2] - 2026-02-09
+
+### Fixed
+- **opus4-6 上下文超限错误识别** (`src/anthropic/handlers.rs`)
+  - 将 `Improperly formed request` 纳入输入过长错误检测，返回 Claude Code 可识别的 `400 Input is too long` 而非 `502 Bad Gateway`
+- **Opus 4.6 模型 ID 移除时间日期** (`src/anthropic/handlers.rs`)
+  - `claude-opus-4-6-20260206` → `claude-opus-4-6`
+- **post_messages 借用冲突编译错误** (`src/anthropic/handlers.rs`)
+  - 将 `override_thinking_from_model_name` 调用移至 `user_id` 提取之前，修复 E0502 借用冲突
+
+### Added
+- **模型 "thinking" 后缀支持** (`src/anthropic/handlers.rs`, `src/anthropic/converter.rs`)
+  - 模型名含 `-thinking` 后缀时自动覆写 thinking 配置（opus4.6 用 adaptive + high effort，其他用 enabled）
+  - 模型列表新增 sonnet/opus4.5/opus4.6/haiku 的 thinking 变体
+
+### Docs
+- **README.md 补充输入压缩配置文档**
+  - 新增"输入压缩"章节，说明 5 层压缩管道机制和 10 个可配置参数
 
 ## [v1.0.1] - 2026-02-08
 

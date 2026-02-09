@@ -71,19 +71,36 @@ echo "v{新版本号}" > VERSION
 # 使用 Edit 工具将 version = "旧版本" 替换为 version = "新版本"
 ```
 
-### 4. 更新 CHANGELOG.md
+### 4. 检查并更新 CHANGELOG.md
 
-将 `[Unreleased]` 替换为新版本号和当前日期：
+> ⚠️ **必须检查 CHANGELOG.md 中当前版本条目是否有实际变更内容！**
+
+**检查逻辑：**
+
+1. 查看 CHANGELOG.md 中最新版本条目（`[Unreleased]` 或当前版本号）下方是否有内容
+2. 如果条目为空（没有 Added/Changed/Fixed 等内容）：
+   - 运行 `git log --oneline $(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || echo HEAD~10)..HEAD` 查看自上个版本 tag 以来的 commit 记录
+   - 运行 `git diff --stat $(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || echo HEAD~10)..HEAD` 查看变更文件
+   - 根据 commit 记录和代码变更，自动生成 CHANGELOG 条目并写入
+3. 如果条目已有内容，跳过生成步骤
+
+**然后更新版本号和日期：**
 
 ```markdown
 # 替换前
 
 ## [Unreleased]
+### Added
+- ...
 
 # 替换后
 
 ## [v{新版本号}] - YYYY-MM-DD
+### Added
+- ...
 ```
+
+如果 CHANGELOG.md 中没有 `[Unreleased]`，而是已有当前版本号条目（如 `## [v1.0.2] - 2026-02-09`），则只需确认内容非空即可。
 
 ### 5. 验证更新
 
