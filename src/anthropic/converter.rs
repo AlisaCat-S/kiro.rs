@@ -13,6 +13,7 @@ use crate::kiro::model::requests::tool::{
 };
 
 use super::types::{ContentBlock, MessagesRequest, Tool as AnthropicTool};
+use crate::anthropic::compressor::CompressionStats;
 use crate::model::config::CompressionConfig;
 
 /// 追加到 Write 工具 description 末尾的内容
@@ -132,6 +133,8 @@ pub fn map_model(model: &str) -> Option<String> {
 pub struct ConversionResult {
     /// 转换后的 Kiro 请求
     pub conversation_state: ConversationState,
+    /// 压缩统计信息（仅在启用压缩时有值）
+    pub compression_stats: Option<CompressionStats>,
 }
 
 /// 转换错误
@@ -329,21 +332,21 @@ pub fn convert_request(
         .with_history(history);
 
     // 14. 执行输入压缩
-    if compression_config.enabled {
+    let compression_stats = if compression_config.enabled {
         let stats = super::compressor::compress(&mut conversation_state, compression_config);
         if stats.total_saved() > 0 || stats.history_turns_removed > 0 {
-            tracing::info!(
-                whitespace_saved = stats.whitespace_saved,
-                thinking_saved = stats.thinking_saved,
-                tool_result_saved = stats.tool_result_saved,
-                tool_use_input_saved = stats.tool_use_input_saved,
-                history_turns_removed = stats.history_turns_removed,
-                "输入压缩完成"
-            );
+            Some(stats)
+        } else {
+            None
         }
-    }
+    } else {
+        None
+    };
 
-    Ok(ConversionResult { conversation_state })
+    Ok(ConversionResult {
+        conversation_state,
+        compression_stats,
+    })
 }
 
 /// 确定聊天触发类型

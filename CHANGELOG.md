@@ -1,5 +1,19 @@
 # Changelog
 
+## [v1.0.5] - 2026-02-09
+
+### Changed
+- **请求日志输出压缩前后 token 估算** (`src/anthropic/converter.rs`, `src/anthropic/handlers.rs`)
+  - `ConversionResult` 新增 `compression_stats` 字段，将压缩统计从 converter 内部返回给调用方
+  - `post_messages` / `post_messages_cc` 在 `convert_request()` 之前估算 input tokens，`Received` 日志追加 `estimated_input_tokens`
+  - 压缩完成后输出 token 对比日志：`estimated_input_tokens`、`compressed_input_tokens`、`tokens_saved` 及各项压缩明细
+  - WebSearch 分支复用已有估算值，消除重复的 `count_all_tokens` 调用
+- **`count_all_tokens` 改为接受借用** (`src/token.rs`)
+  - 参数从按值传递改为引用（`&str`、`&[Message]`、`&Option<Vec<T>>`），消除 handlers 中的深拷贝开销
+- **历史截断统计增加字节数** (`src/anthropic/compressor.rs`)
+  - `CompressionStats` 新增 `history_bytes_saved` 字段，`total_saved()` 包含历史截断字节数
+  - `compress_history_pass` 返回 `(turns_removed, bytes_saved)` 元组，token 估算准确计入历史截断
+
 ## [v1.0.4] - 2026-02-09
 
 ### Changed

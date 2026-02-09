@@ -21,6 +21,7 @@ pub struct CompressionStats {
     pub tool_result_saved: usize,
     pub tool_use_input_saved: usize,
     pub history_turns_removed: usize,
+    pub history_bytes_saved: usize,
 }
 
 impl CompressionStats {
@@ -30,6 +31,7 @@ impl CompressionStats {
             + self.thinking_saved
             + self.tool_result_saved
             + self.tool_use_input_saved
+            + self.history_bytes_saved
     }
 }
 
@@ -71,8 +73,10 @@ pub fn compress(state: &mut ConversationState, config: &CompressionConfig) -> Co
 
     // 5. 历史截断（最后手段）
     if config.max_history_turns > 0 || config.max_history_chars > 0 {
-        stats.history_turns_removed =
+        let (turns, bytes) =
             compress_history_pass(state, config.max_history_turns, config.max_history_chars);
+        stats.history_turns_removed = turns;
+        stats.history_bytes_saved = bytes;
     }
 
     stats
@@ -404,19 +408,32 @@ fn truncate_json_value_strings(value: &mut serde_json::Value, max_chars: usize) 
 // ============ 历史截断 ============
 
 /// 历史截断：保留前 2 条（系统消息对），从前往后成对移除
+///
+/// 返回 (移除的轮数, 移除的字节数)
 fn compress_history_pass(
     state: &mut ConversationState,
     max_turns: usize,
     max_chars: usize,
-) -> usize {
+) -> (usize, usize) {
     let mut removed = 0usize;
+    let mut bytes_saved = 0usize;
     let preserve_count = 2;
+
+    /// 计算一条消息的字节数
+    fn msg_bytes(msg: &Message) -> usize {
+        match msg {
+            Message::User(u) => u.user_input_message.content.len(),
+            Message::Assistant(a) => a.assistant_response_message.content.len(),
+        }
+    }
 
     // 按轮数截断
     if max_turns > 0 {
         let max_messages = preserve_count + max_turns * 2;
         while state.history.len() > max_messages && state.history.len() > preserve_count + 2 {
+            bytes_saved += msg_bytes(&state.history[preserve_count]);
             state.history.remove(preserve_count);
+            bytes_saved += msg_bytes(&state.history[preserve_count]);
             state.history.remove(preserve_count);
             removed += 1;
         }
@@ -438,13 +455,15 @@ fn compress_history_pass(
                 break;
             }
 
+            bytes_saved += msg_bytes(&state.history[preserve_count]);
             state.history.remove(preserve_count);
+            bytes_saved += msg_bytes(&state.history[preserve_count]);
             state.history.remove(preserve_count);
             removed += 1;
         }
     }
 
-    removed
+    (removed, bytes_saved)
 }
 
 // ============ 工具函数 ============

@@ -192,12 +192,21 @@ pub async fn post_messages(
         );
     }
 
+    // 估算压缩前 input tokens（需在 convert_request 之前，因为后者会消费压缩）
+    let estimated_input_tokens = token::count_all_tokens(
+        &payload.model,
+        &payload.system,
+        &payload.messages,
+        &payload.tools,
+    ) as i32;
+
     tracing::info!(
         model = %payload.model,
         max_tokens = %payload.max_tokens,
         stream = %payload.stream,
         message_count = %payload.messages.len(),
         user_id = %mask_user_id(user_id),
+        estimated_input_tokens,
         "Received POST /v1/messages request"
     );
     // 检查 KiroProvider 是否可用
@@ -219,16 +228,8 @@ pub async fn post_messages(
     // 检查是否为 WebSearch 请求
     if websearch::has_web_search_tool(&payload) {
         tracing::info!("检测到 WebSearch 工具，路由到 WebSearch 处理");
-
-        // 估算输入 tokens
-        let input_tokens = token::count_all_tokens(
-            payload.model.clone(),
-            payload.system.clone(),
-            payload.messages.clone(),
-            payload.tools.clone(),
-        ) as i32;
-
-        return websearch::handle_websearch_request(provider, &payload, input_tokens).await;
+        return websearch::handle_websearch_request(provider, &payload, estimated_input_tokens)
+            .await;
     }
 
     // 转换请求
@@ -251,6 +252,24 @@ pub async fn post_messages(
                 .into_response();
         }
     };
+
+    // 输出压缩统计（含 token 对比）
+    if let Some(ref stats) = conversion_result.compression_stats {
+        let saved_tokens = (stats.total_saved() / 4) as i32;
+        let compressed_input_tokens = (estimated_input_tokens - saved_tokens).max(1);
+        tracing::info!(
+            estimated_input_tokens,
+            compressed_input_tokens,
+            tokens_saved = saved_tokens,
+            whitespace_saved = stats.whitespace_saved,
+            thinking_saved = stats.thinking_saved,
+            tool_result_saved = stats.tool_result_saved,
+            tool_use_input_saved = stats.tool_use_input_saved,
+            history_turns_removed = stats.history_turns_removed,
+            history_bytes_saved = stats.history_bytes_saved,
+            "输入压缩完成"
+        );
+    }
 
     // 构建 Kiro 请求
     let kiro_request = KiroRequest {
@@ -284,14 +303,6 @@ pub async fn post_messages(
         "已构建 Kiro 请求体"
     );
 
-    // 估算输入 tokens
-    let input_tokens = token::count_all_tokens(
-        payload.model.clone(),
-        payload.system,
-        payload.messages,
-        payload.tools,
-    ) as i32;
-
     // 检查是否启用了thinking
     let thinking_enabled = payload
         .thinking
@@ -305,7 +316,7 @@ pub async fn post_messages(
             provider,
             &request_body,
             &payload.model,
-            input_tokens,
+            estimated_input_tokens,
             thinking_enabled,
             user_id,
         )
@@ -316,14 +327,12 @@ pub async fn post_messages(
             provider,
             &request_body,
             &payload.model,
-            input_tokens,
+            estimated_input_tokens,
             user_id,
         )
         .await
     }
 }
-
-/// 处理流式请求
 async fn handle_stream_request(
     provider: std::sync::Arc<crate::kiro::provider::KiroProvider>,
     request_body: &str,
@@ -682,10 +691,10 @@ pub async fn count_tokens(
     );
 
     let total_tokens = token::count_all_tokens(
-        payload.model,
-        payload.system,
-        payload.messages,
-        payload.tools,
+        &payload.model,
+        &payload.system,
+        &payload.messages,
+        &payload.tools,
     ) as i32;
 
     Json(CountTokensResponse {
@@ -702,14 +711,6 @@ pub async fn post_messages_cc(
     State(state): State<AppState>,
     JsonExtractor(mut payload): JsonExtractor<MessagesRequest>,
 ) -> Response {
-    tracing::info!(
-        model = %payload.model,
-        max_tokens = %payload.max_tokens,
-        stream = %payload.stream,
-        message_count = %payload.messages.len(),
-        "Received POST /cc/v1/messages request"
-    );
-
     // 检查 KiroProvider 是否可用
     let provider = match &state.kiro_provider {
         Some(p) => p.clone(),
@@ -729,19 +730,28 @@ pub async fn post_messages_cc(
     // 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
     override_thinking_from_model_name(&mut payload);
 
+    // 估算压缩前 input tokens（需在 convert_request 之前）
+    let estimated_input_tokens = token::count_all_tokens(
+        &payload.model,
+        &payload.system,
+        &payload.messages,
+        &payload.tools,
+    ) as i32;
+
+    tracing::info!(
+        model = %payload.model,
+        max_tokens = %payload.max_tokens,
+        stream = %payload.stream,
+        message_count = %payload.messages.len(),
+        estimated_input_tokens,
+        "Received POST /cc/v1/messages request"
+    );
+
     // 检查是否为 WebSearch 请求
     if websearch::has_web_search_tool(&payload) {
         tracing::info!("检测到 WebSearch 工具，路由到 WebSearch 处理");
-
-        // 估算输入 tokens
-        let input_tokens = token::count_all_tokens(
-            payload.model.clone(),
-            payload.system.clone(),
-            payload.messages.clone(),
-            payload.tools.clone(),
-        ) as i32;
-
-        return websearch::handle_websearch_request(provider, &payload, input_tokens).await;
+        return websearch::handle_websearch_request(provider, &payload, estimated_input_tokens)
+            .await;
     }
 
     // 转换请求
@@ -764,6 +774,24 @@ pub async fn post_messages_cc(
                 .into_response();
         }
     };
+
+    // 输出压缩统计（含 token 对比）
+    if let Some(ref stats) = conversion_result.compression_stats {
+        let saved_tokens = (stats.total_saved() / 4) as i32;
+        let compressed_input_tokens = (estimated_input_tokens - saved_tokens).max(1);
+        tracing::info!(
+            estimated_input_tokens,
+            compressed_input_tokens,
+            tokens_saved = saved_tokens,
+            whitespace_saved = stats.whitespace_saved,
+            thinking_saved = stats.thinking_saved,
+            tool_result_saved = stats.tool_result_saved,
+            tool_use_input_saved = stats.tool_use_input_saved,
+            history_turns_removed = stats.history_turns_removed,
+            history_bytes_saved = stats.history_bytes_saved,
+            "输入压缩完成"
+        );
+    }
 
     // 构建 Kiro 请求
     let kiro_request = KiroRequest {
@@ -797,14 +825,6 @@ pub async fn post_messages_cc(
         "已构建 Kiro 请求体"
     );
 
-    // 估算输入 tokens
-    let input_tokens = token::count_all_tokens(
-        payload.model.clone(),
-        payload.system,
-        payload.messages,
-        payload.tools,
-    ) as i32;
-
     // 检查是否启用了thinking
     let thinking_enabled = payload
         .thinking
@@ -819,7 +839,7 @@ pub async fn post_messages_cc(
             provider,
             &request_body,
             &payload.model,
-            input_tokens,
+            estimated_input_tokens,
             thinking_enabled,
             user_id,
         )
@@ -831,7 +851,7 @@ pub async fn post_messages_cc(
             provider,
             &request_body,
             &payload.model,
-            input_tokens,
+            estimated_input_tokens,
             user_id,
         )
         .await
