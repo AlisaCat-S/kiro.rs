@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [v1.0.7] - 2026-02-10
 
 ### Added
 - **图片 Token 估算与压缩模块** (`src/image.rs`)
