@@ -32,6 +32,8 @@ export interface CredentialStatusItem {
   // ===== upstream 字段 =====
   successCount: number
   lastUsedAt: string | null
+  hasProxy: boolean
+  proxyUrl?: string
 }
 
 // 余额响应
@@ -119,8 +121,12 @@ export interface AddCredentialRequest {
   clientId?: string
   clientSecret?: string
   priority?: number
-  region?: string
+  authRegion?: string
+  apiRegion?: string
   machineId?: string
+  proxyUrl?: string
+  proxyUsername?: string
+  proxyPassword?: string
 }
 
 // 添加凭据响应

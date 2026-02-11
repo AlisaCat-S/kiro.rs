@@ -8,7 +8,6 @@ use axum::{
 };
 
 use crate::kiro::provider::KiroProvider;
-use crate::model::config::CompressionConfig;
 
 use super::{
     handlers::{count_tokens, get_models, post_messages, post_messages_cc},
@@ -33,13 +32,12 @@ const MAX_BODY_SIZE: usize = 50 * 1024 * 1024;
 /// # 参数
 /// - `api_key`: API 密钥，用于验证客户端请求
 /// - `kiro_provider`: 可选的 KiroProvider，用于调用上游 API
-///
+
 /// 创建带有 KiroProvider 的 Anthropic API 路由
 pub fn create_router_with_provider(
     api_key: impl Into<String>,
     kiro_provider: Option<KiroProvider>,
     profile_arn: Option<String>,
-    compression_config: CompressionConfig,
 ) -> Router {
     let mut state = AppState::new(api_key);
     if let Some(provider) = kiro_provider {
@@ -48,7 +46,6 @@ pub fn create_router_with_provider(
     if let Some(arn) = profile_arn {
         state = state.with_profile_arn(arn);
     }
-    state = state.with_compression_config(compression_config);
 
     // 需要认证的 /v1 路由
     let v1_routes = Router::new()

@@ -11,7 +11,6 @@ use crate::anthropic::types::{
     CountTokensRequest, CountTokensResponse, Message, SystemMessage, Tool,
 };
 use crate::http_client::{ProxyConfig, build_client};
-use crate::image::estimate_image_tokens;
 use crate::model::config::TlsBackend;
 use std::sync::OnceLock;
 
@@ -77,7 +76,6 @@ fn is_non_western_char(c: char) -> bool {
 /// - 西文字符：每个计 1 个字符单位
 /// - 4 个字符单位 = 1 token（四舍五入）
 /// ```
-#[allow(clippy::let_and_return)]
 pub fn count_tokens(text: &str) -> u64 {
     // println!("text: {}", text);
 
@@ -107,12 +105,11 @@ pub fn count_tokens(text: &str) -> u64 {
 /// 估算请求的输入 tokens
 ///
 /// 优先调用远程 API，失败时回退到本地计算
-#[allow(clippy::collapsible_if)]
 pub(crate) fn count_all_tokens(
-    model: &str,
-    system: &Option<Vec<SystemMessage>>,
-    messages: &[Message],
-    tools: &Option<Vec<Tool>>,
+    model: String,
+    system: Option<Vec<SystemMessage>>,
+    messages: Vec<Message>,
+    tools: Option<Vec<Tool>>,
 ) -> u64 {
     // 检查是否配置了远程 API
     if let Some(config) = get_config() {
@@ -120,7 +117,7 @@ pub(crate) fn count_all_tokens(
             // 尝试调用远程 API
             let result = tokio::task::block_in_place(|| {
                 tokio::runtime::Handle::current().block_on(call_remote_count_tokens(
-                    api_url, config, model, system, messages, tools,
+                    api_url, config, model, &system, &messages, &tools,
                 ))
             });
 
@@ -144,17 +141,17 @@ pub(crate) fn count_all_tokens(
 async fn call_remote_count_tokens(
     api_url: &str,
     config: &CountTokensConfig,
-    model: &str,
+    model: String,
     system: &Option<Vec<SystemMessage>>,
-    messages: &[Message],
+    messages: &Vec<Message>,
     tools: &Option<Vec<Tool>>,
 ) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
     let client = build_client(config.proxy.as_ref(), 300, config.tls_backend)?;
 
     // 构建请求体
     let request = CountTokensRequest {
-        model: model.to_string(), // 模型名称用于 token 计算
-        messages: messages.to_vec(),
+        model: model, // 模型名称用于 token 计算
+        messages: messages.clone(),
         system: system.clone(),
         tools: tools.clone(),
     };
@@ -188,45 +185,34 @@ async fn call_remote_count_tokens(
 
 /// 本地计算请求的输入 tokens
 fn count_all_tokens_local(
-    system: &Option<Vec<SystemMessage>>,
-    messages: &[Message],
-    tools: &Option<Vec<Tool>>,
+    system: Option<Vec<SystemMessage>>,
+    messages: Vec<Message>,
+    tools: Option<Vec<Tool>>,
 ) -> u64 {
     let mut total = 0;
 
     // 系统消息
-    if let Some(system) = system {
+    if let Some(ref system) = system {
         for msg in system {
             total += count_tokens(&msg.text);
         }
     }
 
     // 用户消息
-    for msg in messages {
+    for msg in &messages {
         if let serde_json::Value::String(s) = &msg.content {
             total += count_tokens(s);
         } else if let serde_json::Value::Array(arr) = &msg.content {
             for item in arr {
-                // 文本内容
                 if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
                     total += count_tokens(text);
-                }
-                // 图片内容
-                if item.get("type").and_then(|v| v.as_str()) == Some("image") {
-                    if let Some(source) = item.get("source") {
-                        if let Some(data) = source.get("data").and_then(|v| v.as_str()) {
-                            if let Some((tokens, _, _)) = estimate_image_tokens(data) {
-                                total += tokens;
-                            }
-                        }
-                    }
                 }
             }
         }
     }
 
     // 工具定义
-    if let Some(tools) = tools {
+    if let Some(ref tools) = tools {
         for tool in tools {
             total += count_tokens(&tool.name);
             total += count_tokens(&tool.description);

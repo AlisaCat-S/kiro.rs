@@ -6,7 +6,6 @@ use crate::kiro::model::events::Event;
 use crate::kiro::model::requests::kiro::KiroRequest;
 use crate::kiro::parser::decoder::EventStreamDecoder;
 use crate::token;
-use anyhow::Error;
 use axum::{
     Json as JsonExtractor,
     body::Body,
@@ -18,67 +17,14 @@ use bytes::Bytes;
 use futures::{Stream, StreamExt, stream};
 use serde_json::json;
 use std::time::Duration;
-use tokio::time::{Instant, interval_at};
+use tokio::time::interval;
 use uuid::Uuid;
 
 use super::converter::{ConversionError, convert_request};
 use super::middleware::AppState;
 use super::stream::{BufferedStreamContext, SseEvent, StreamContext};
-use super::types::{
-    CountTokensRequest, CountTokensResponse, ErrorResponse, MessagesRequest, Model, ModelsResponse,
-    OutputConfig, Thinking,
-};
+use super::types::{CountTokensRequest, CountTokensResponse, ErrorResponse, MessagesRequest, Model, ModelsResponse, OutputConfig, Thinking};
 use super::websearch;
-
-fn is_input_too_long_error(err: &Error) -> bool {
-    // provider.rs 在遇到上游返回的 input-too-long 场景时，会在错误中保留以下关键字：
-    // - CONTENT_LENGTH_EXCEEDS_THRESHOLD
-    // - Input is too long
-    //
-    // 这类错误是确定性的请求问题（缩短输入才可恢复），不应返回 5xx（会诱发客户端重试）。
-    let s = err.to_string();
-    s.contains("CONTENT_LENGTH_EXCEEDS_THRESHOLD")
-        || s.contains("Input is too long")
-        || s.contains("Improperly formed request")
-}
-
-fn map_kiro_provider_error_to_response(request_body: &str, err: Error) -> Response {
-    if is_input_too_long_error(&err) {
-        tracing::warn!(
-            kiro_request_body_bytes = request_body.len(),
-            error = %err,
-            "上游拒绝请求：输入上下文过长（不应重试）"
-        );
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse::new(
-                "invalid_request_error",
-                "Input is too long (CONTENT_LENGTH_EXCEEDS_THRESHOLD). Reduce conversation history/system/tools; retrying the same request will not help.",
-            )),
-        )
-            .into_response();
-    }
-
-    tracing::error!("Kiro API 调用失败: {}", err);
-    (
-        StatusCode::BAD_GATEWAY,
-        Json(ErrorResponse::new(
-            "api_error",
-            format!("上游 API 调用失败: {}", err),
-        )),
-    )
-        .into_response()
-}
-
-/// 对 user_id 进行掩码处理，保护隐私
-fn mask_user_id(user_id: Option<&str>) -> String {
-    match user_id {
-        Some(id) if id.len() > 25 => format!("{}***{}", &id[..13], &id[id.len() - 8..]),
-        Some(id) if id.len() > 12 => format!("{}***{}", &id[..4], &id[id.len() - 4..]),
-        Some(_) => "***".to_string(),
-        None => "None".to_string(),
-    }
-}
 
 /// GET /v1/models
 ///
@@ -174,39 +120,11 @@ pub async fn post_messages(
     State(state): State<AppState>,
     JsonExtractor(mut payload): JsonExtractor<MessagesRequest>,
 ) -> Response {
-    // 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
-    override_thinking_from_model_name(&mut payload);
-
-    // 提取 user_id 用于凭据亲和性
-    let user_id = payload.metadata.as_ref().and_then(|m| m.user_id.as_deref());
-
-    // 限制 max_tokens 最大值为 32000（Kiro 上游限制）
-    const MAX_TOKENS_LIMIT: i32 = 32000;
-    let original_max_tokens = payload.max_tokens;
-    if payload.max_tokens > MAX_TOKENS_LIMIT {
-        payload.max_tokens = MAX_TOKENS_LIMIT;
-        tracing::warn!(
-            original_max_tokens = original_max_tokens,
-            adjusted_max_tokens = MAX_TOKENS_LIMIT,
-            "max_tokens 超出上游限制，已自动调整"
-        );
-    }
-
-    // 估算压缩前 input tokens（需在 convert_request 之前，因为后者会消费压缩）
-    let estimated_input_tokens = token::count_all_tokens(
-        &payload.model,
-        &payload.system,
-        &payload.messages,
-        &payload.tools,
-    ) as i32;
-
     tracing::info!(
         model = %payload.model,
         max_tokens = %payload.max_tokens,
         stream = %payload.stream,
         message_count = %payload.messages.len(),
-        user_id = %mask_user_id(user_id),
-        estimated_input_tokens,
         "Received POST /v1/messages request"
     );
     // 检查 KiroProvider 是否可用
@@ -225,15 +143,26 @@ pub async fn post_messages(
         }
     };
 
+    // 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
+    override_thinking_from_model_name(&mut payload);
+
     // 检查是否为 WebSearch 请求
     if websearch::has_web_search_tool(&payload) {
         tracing::info!("检测到 WebSearch 工具，路由到 WebSearch 处理");
-        return websearch::handle_websearch_request(provider, &payload, estimated_input_tokens)
-            .await;
+
+        // 估算输入 tokens
+        let input_tokens = token::count_all_tokens(
+            payload.model.clone(),
+            payload.system.clone(),
+            payload.messages.clone(),
+            payload.tools.clone(),
+        ) as i32;
+
+        return websearch::handle_websearch_request(provider, &payload, input_tokens).await;
     }
 
     // 转换请求
-    let conversion_result = match convert_request(&payload, &state.compression_config) {
+    let conversion_result = match convert_request(&payload) {
         Ok(result) => result,
         Err(e) => {
             let (error_type, message) = match &e {
@@ -252,21 +181,6 @@ pub async fn post_messages(
                 .into_response();
         }
     };
-
-    // 输出压缩统计（以字节为单位；用于排查上游 ~400KB 请求体限制）
-    if let Some(ref stats) = conversion_result.compression_stats {
-        tracing::info!(
-            estimated_input_tokens,
-            bytes_saved_total = stats.total_saved(),
-            whitespace_bytes_saved = stats.whitespace_saved,
-            thinking_bytes_saved = stats.thinking_saved,
-            tool_result_bytes_saved = stats.tool_result_saved,
-            tool_use_input_bytes_saved = stats.tool_use_input_saved,
-            history_turns_removed = stats.history_turns_removed,
-            history_bytes_saved = stats.history_bytes_saved,
-            "输入压缩完成"
-        );
-    }
 
     // 构建 Kiro 请求
     let kiro_request = KiroRequest {
@@ -289,16 +203,15 @@ pub async fn post_messages(
         }
     };
 
-    #[cfg(feature = "sensitive-logs")]
-    tracing::debug!(
-        "Kiro request body: {}",
-        truncate_middle(&request_body, 1200)
-    );
-    #[cfg(not(feature = "sensitive-logs"))]
-    tracing::debug!(
-        kiro_request_body_bytes = request_body.len(),
-        "已构建 Kiro 请求体"
-    );
+    tracing::debug!("Kiro request body: {}", request_body);
+
+    // 估算输入 tokens
+    let input_tokens = token::count_all_tokens(
+        payload.model.clone(),
+        payload.system,
+        payload.messages,
+        payload.tools,
+    ) as i32;
 
     // 检查是否启用了thinking
     let thinking_enabled = payload
@@ -313,35 +226,38 @@ pub async fn post_messages(
             provider,
             &request_body,
             &payload.model,
-            estimated_input_tokens,
+            input_tokens,
             thinking_enabled,
-            user_id,
         )
         .await
     } else {
         // 非流式响应
-        handle_non_stream_request(
-            provider,
-            &request_body,
-            &payload.model,
-            estimated_input_tokens,
-            user_id,
-        )
-        .await
+        handle_non_stream_request(provider, &request_body, &payload.model, input_tokens).await
     }
 }
+
+/// 处理流式请求
 async fn handle_stream_request(
     provider: std::sync::Arc<crate::kiro::provider::KiroProvider>,
     request_body: &str,
     model: &str,
     input_tokens: i32,
     thinking_enabled: bool,
-    user_id: Option<&str>,
 ) -> Response {
     // 调用 Kiro API（支持多凭据故障转移）
-    let response = match provider.call_api_stream(request_body, user_id).await {
+    let response = match provider.call_api_stream(request_body).await {
         Ok(resp) => resp,
-        Err(e) => return map_kiro_provider_error_to_response(request_body, e),
+        Err(e) => {
+            tracing::error!("Kiro API 调用失败: {}", e);
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorResponse::new(
+                    "api_error",
+                    format!("上游 API 调用失败: {}", e),
+                )),
+            )
+                .into_response();
+        }
     };
 
     // 创建流处理上下文
@@ -386,11 +302,9 @@ fn create_sse_stream(
 
     // 然后处理 Kiro 响应流，同时每25秒发送 ping 保活
     let body_stream = response.bytes_stream();
-    let ping_period = Duration::from_secs(PING_INTERVAL_SECS);
-    let ping_interval = interval_at(Instant::now() + ping_period, ping_period);
 
     let processing_stream = stream::unfold(
-        (body_stream, ctx, EventStreamDecoder::new(), false, ping_interval),
+        (body_stream, ctx, EventStreamDecoder::new(), false, interval(Duration::from_secs(PING_INTERVAL_SECS))),
         |(mut body_stream, mut ctx, mut decoder, finished, mut ping_interval)| async move {
             if finished {
                 return None;
@@ -474,12 +388,21 @@ async fn handle_non_stream_request(
     request_body: &str,
     model: &str,
     input_tokens: i32,
-    user_id: Option<&str>,
 ) -> Response {
     // 调用 Kiro API（支持多凭据故障转移）
-    let response = match provider.call_api(request_body, user_id).await {
+    let response = match provider.call_api(request_body).await {
         Ok(resp) => resp,
-        Err(e) => return map_kiro_provider_error_to_response(request_body, e),
+        Err(e) => {
+            tracing::error!("Kiro API 调用失败: {}", e);
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorResponse::new(
+                    "api_error",
+                    format!("上游 API 调用失败: {}", e),
+                )),
+            )
+                .into_response();
+        }
     };
 
     // 读取响应体
@@ -529,35 +452,19 @@ async fn handle_non_stream_request(
                             // 累积工具的 JSON 输入
                             let buffer = tool_json_buffers
                                 .entry(tool_use.tool_use_id.clone())
-                                .or_default();
+                                .or_insert_with(String::new);
                             buffer.push_str(&tool_use.input);
 
                             // 如果是完整的工具调用，添加到列表
                             if tool_use.stop {
-                                let input: serde_json::Value = if buffer.trim().is_empty() {
-                                    // 上游可能省略无参工具的 input 字段（或传空字符串）。
-                                    // 这里将其视为合法的空对象，避免 EOF 解析错误导致日志噪音。
-                                    serde_json::json!({})
-                                } else {
-                                    serde_json::from_str(buffer).unwrap_or_else(|e| {
-                                        // 仅在显式开启敏感日志时输出完整内容
-                                        #[cfg(feature = "sensitive-logs")]
+                                let input: serde_json::Value = serde_json::from_str(buffer)
+                                    .unwrap_or_else(|e| {
                                         tracing::warn!(
-                                            tool_use_id = %tool_use.tool_use_id,
-                                            buffer = %buffer,
-                                            request_body = %request_body,
-                                            "工具输入 JSON 解析失败: {e}"
-                                        );
-                                        #[cfg(not(feature = "sensitive-logs"))]
-                                        tracing::warn!(
-                                            tool_use_id = %tool_use.tool_use_id,
-                                            buffer_bytes = buffer.len(),
-                                            request_body_bytes = request_body.len(),
-                                            "工具输入 JSON 解析失败: {e}"
+                                            "工具输入 JSON 解析失败: {}, tool_use_id: {}, 原始内容: {}",
+                                            e, tool_use.tool_use_id, buffer
                                         );
                                         serde_json::json!({})
-                                    })
-                                };
+                                    });
 
                                 tool_uses.push(json!({
                                     "type": "tool_use",
@@ -652,10 +559,14 @@ fn override_thinking_from_model_name(payload: &mut MessagesRequest) {
         return;
     }
 
-    let is_opus_4_6 = model_lower.contains("opus")
-        && (model_lower.contains("4-6") || model_lower.contains("4.6"));
+    let is_opus_4_6 =
+        model_lower.contains("opus") && (model_lower.contains("4-6") || model_lower.contains("4.6"));
 
-    let thinking_type = if is_opus_4_6 { "adaptive" } else { "enabled" };
+    let thinking_type = if is_opus_4_6 {
+        "adaptive"
+    } else {
+        "enabled"
+    };
 
     tracing::info!(
         model = %payload.model,
@@ -667,7 +578,7 @@ fn override_thinking_from_model_name(payload: &mut MessagesRequest) {
         thinking_type: thinking_type.to_string(),
         budget_tokens: 20000,
     });
-
+    
     if is_opus_4_6 {
         payload.output_config = Some(OutputConfig {
             effort: "high".to_string(),
@@ -688,10 +599,10 @@ pub async fn count_tokens(
     );
 
     let total_tokens = token::count_all_tokens(
-        &payload.model,
-        &payload.system,
-        &payload.messages,
-        &payload.tools,
+        payload.model,
+        payload.system,
+        payload.messages,
+        payload.tools,
     ) as i32;
 
     Json(CountTokensResponse {
@@ -708,6 +619,14 @@ pub async fn post_messages_cc(
     State(state): State<AppState>,
     JsonExtractor(mut payload): JsonExtractor<MessagesRequest>,
 ) -> Response {
+    tracing::info!(
+        model = %payload.model,
+        max_tokens = %payload.max_tokens,
+        stream = %payload.stream,
+        message_count = %payload.messages.len(),
+        "Received POST /cc/v1/messages request"
+    );
+
     // 检查 KiroProvider 是否可用
     let provider = match &state.kiro_provider {
         Some(p) => p.clone(),
@@ -727,32 +646,23 @@ pub async fn post_messages_cc(
     // 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
     override_thinking_from_model_name(&mut payload);
 
-    // 估算压缩前 input tokens（需在 convert_request 之前）
-    let estimated_input_tokens = token::count_all_tokens(
-        &payload.model,
-        &payload.system,
-        &payload.messages,
-        &payload.tools,
-    ) as i32;
-
-    tracing::info!(
-        model = %payload.model,
-        max_tokens = %payload.max_tokens,
-        stream = %payload.stream,
-        message_count = %payload.messages.len(),
-        estimated_input_tokens,
-        "Received POST /cc/v1/messages request"
-    );
-
     // 检查是否为 WebSearch 请求
     if websearch::has_web_search_tool(&payload) {
         tracing::info!("检测到 WebSearch 工具，路由到 WebSearch 处理");
-        return websearch::handle_websearch_request(provider, &payload, estimated_input_tokens)
-            .await;
+
+        // 估算输入 tokens
+        let input_tokens = token::count_all_tokens(
+            payload.model.clone(),
+            payload.system.clone(),
+            payload.messages.clone(),
+            payload.tools.clone(),
+        ) as i32;
+
+        return websearch::handle_websearch_request(provider, &payload, input_tokens).await;
     }
 
     // 转换请求
-    let conversion_result = match convert_request(&payload, &state.compression_config) {
+    let conversion_result = match convert_request(&payload) {
         Ok(result) => result,
         Err(e) => {
             let (error_type, message) = match &e {
@@ -771,21 +681,6 @@ pub async fn post_messages_cc(
                 .into_response();
         }
     };
-
-    // 输出压缩统计（以字节为单位；用于排查上游 ~400KB 请求体限制）
-    if let Some(ref stats) = conversion_result.compression_stats {
-        tracing::info!(
-            estimated_input_tokens,
-            bytes_saved_total = stats.total_saved(),
-            whitespace_bytes_saved = stats.whitespace_saved,
-            thinking_bytes_saved = stats.thinking_saved,
-            tool_result_bytes_saved = stats.tool_result_saved,
-            tool_use_input_bytes_saved = stats.tool_use_input_saved,
-            history_turns_removed = stats.history_turns_removed,
-            history_bytes_saved = stats.history_bytes_saved,
-            "输入压缩完成"
-        );
-    }
 
     // 构建 Kiro 请求
     let kiro_request = KiroRequest {
@@ -808,16 +703,15 @@ pub async fn post_messages_cc(
         }
     };
 
-    #[cfg(feature = "sensitive-logs")]
-    tracing::debug!(
-        "Kiro request body: {}",
-        truncate_middle(&request_body, 1200)
-    );
-    #[cfg(not(feature = "sensitive-logs"))]
-    tracing::debug!(
-        kiro_request_body_bytes = request_body.len(),
-        "已构建 Kiro 请求体"
-    );
+    tracing::debug!("Kiro request body: {}", request_body);
+
+    // 估算输入 tokens
+    let input_tokens = token::count_all_tokens(
+        payload.model.clone(),
+        payload.system,
+        payload.messages,
+        payload.tools,
+    ) as i32;
 
     // 检查是否启用了thinking
     let thinking_enabled = payload
@@ -828,27 +722,17 @@ pub async fn post_messages_cc(
 
     if payload.stream {
         // 流式响应（缓冲模式）
-        let user_id = payload.metadata.as_ref().and_then(|m| m.user_id.as_deref());
         handle_stream_request_buffered(
             provider,
             &request_body,
             &payload.model,
-            estimated_input_tokens,
+            input_tokens,
             thinking_enabled,
-            user_id,
         )
         .await
     } else {
         // 非流式响应（复用现有逻辑，已经使用正确的 input_tokens）
-        let user_id = payload.metadata.as_ref().and_then(|m| m.user_id.as_deref());
-        handle_non_stream_request(
-            provider,
-            &request_body,
-            &payload.model,
-            estimated_input_tokens,
-            user_id,
-        )
-        .await
+        handle_non_stream_request(provider, &request_body, &payload.model, input_tokens).await
     }
 }
 
@@ -862,12 +746,21 @@ async fn handle_stream_request_buffered(
     model: &str,
     estimated_input_tokens: i32,
     thinking_enabled: bool,
-    user_id: Option<&str>,
 ) -> Response {
     // 调用 Kiro API（支持多凭据故障转移）
-    let response = match provider.call_api_stream(request_body, user_id).await {
+    let response = match provider.call_api_stream(request_body).await {
         Ok(resp) => resp,
-        Err(e) => return map_kiro_provider_error_to_response(request_body, e),
+        Err(e) => {
+            tracing::error!("Kiro API 调用失败: {}", e);
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorResponse::new(
+                    "api_error",
+                    format!("上游 API 调用失败: {}", e),
+                )),
+            )
+                .into_response();
+        }
     };
 
     // 创建缓冲流处理上下文
@@ -898,8 +791,6 @@ fn create_buffered_sse_stream(
     ctx: BufferedStreamContext,
 ) -> impl Stream<Item = Result<Bytes, Infallible>> {
     let body_stream = response.bytes_stream();
-    let ping_period = Duration::from_secs(PING_INTERVAL_SECS);
-    let ping_interval = interval_at(Instant::now() + ping_period, ping_period);
 
     stream::unfold(
         (
@@ -907,7 +798,7 @@ fn create_buffered_sse_stream(
             ctx,
             EventStreamDecoder::new(),
             false,
-            ping_interval,
+            interval(Duration::from_secs(PING_INTERVAL_SECS)),
         ),
         |(mut body_stream, mut ctx, mut decoder, finished, mut ping_interval)| async move {
             if finished {
@@ -977,40 +868,4 @@ fn create_buffered_sse_stream(
         },
     )
     .flatten()
-}
-
-/// 截断字符串中间部分，保留头尾各 `keep` 个字符
-///
-/// 用于 debug 日志：避免输出过长的请求体，同时保留足够上下文便于排查。
-/// 正确处理 UTF-8 多字节字符边界，不会截断中文。
-#[cfg(feature = "sensitive-logs")]
-fn truncate_middle(s: &str, keep: usize) -> std::borrow::Cow<'_, str> {
-    // 按字符数计算，避免截断后反而更长
-    let char_count = s.chars().count();
-    let min_omit = 30; // 省略号 + 数字的最小开销，确保截断有意义
-    if char_count <= keep * 2 + min_omit {
-        return std::borrow::Cow::Borrowed(s);
-    }
-
-    // 找到第 keep 个字符的字节边界
-    let head_end = s
-        .char_indices()
-        .nth(keep)
-        .map(|(i, _)| i)
-        .unwrap_or(s.len());
-
-    // 找到倒数第 keep 个字符的字节边界
-    let tail_start = s
-        .char_indices()
-        .nth_back(keep - 1)
-        .map(|(i, _)| i)
-        .unwrap_or(0);
-
-    let omitted = s.len() - head_end - (s.len() - tail_start);
-    std::borrow::Cow::Owned(format!(
-        "{}...({} bytes omitted)...{}",
-        &s[..head_end],
-        omitted,
-        &s[tail_start..]
-    ))
 }

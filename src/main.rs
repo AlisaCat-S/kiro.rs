@@ -3,7 +3,6 @@ mod admin_ui;
 mod anthropic;
 mod common;
 mod http_client;
-pub mod image;
 mod kiro;
 mod model;
 pub mod token;
@@ -57,17 +56,7 @@ async fn main() {
 
     // 获取第一个凭据用于日志显示
     let first_credentials = credentials_list.first().cloned().unwrap_or_default();
-    #[cfg(feature = "sensitive-logs")]
     tracing::debug!("主凭证: {:?}", first_credentials);
-    #[cfg(not(feature = "sensitive-logs"))]
-    tracing::debug!(
-        id = ?first_credentials.id,
-        priority = first_credentials.priority,
-        has_profile_arn = first_credentials.profile_arn.is_some(),
-        has_expires_at = first_credentials.expires_at.is_some(),
-        auth_method = ?first_credentials.auth_method.as_deref(),
-        "主凭证摘要"
-    );
 
     // 获取 API Key
     let api_key = config.api_key.clone().unwrap_or_else(|| {
@@ -101,13 +90,6 @@ async fn main() {
         std::process::exit(1);
     });
     let token_manager = Arc::new(token_manager);
-
-    // 初始化余额缓存并按余额选择初始凭据
-    let init_count = token_manager.initialize_balances().await;
-    if init_count == 0 && token_manager.total_count() > 0 {
-        tracing::warn!("所有凭据余额初始化失败，将按优先级选择凭据");
-    }
-
     let kiro_provider = KiroProvider::with_proxy(token_manager.clone(), proxy_config.clone());
 
     // 初始化 count_tokens 配置
@@ -124,7 +106,6 @@ async fn main() {
         &api_key,
         Some(kiro_provider),
         first_credentials.profile_arn.clone(),
-        config.compression.clone(),
     );
 
     // 构建 Admin API 路由（如果配置了非空的 admin_api_key）
@@ -160,14 +141,7 @@ async fn main() {
     // 启动服务器
     let addr = format!("{}:{}", config.host, config.port);
     tracing::info!("启动 Anthropic API 端点: {}", addr);
-    #[cfg(feature = "sensitive-logs")]
-    tracing::debug!("API Key: {}***", &api_key[..(api_key.len() / 2)]);
-    #[cfg(not(feature = "sensitive-logs"))]
-    tracing::info!(
-        "API Key: ***{} (长度: {})",
-        &api_key[api_key.len().saturating_sub(4)..],
-        api_key.len()
-    );
+    tracing::info!("API Key: {}***", &api_key[..(api_key.len() / 2)]);
     tracing::info!("可用 API:");
     tracing::info!("  GET  /v1/models");
     tracing::info!("  POST /v1/messages");
@@ -183,14 +157,6 @@ async fn main() {
         tracing::info!("  GET  /admin");
     }
 
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::error!("绑定监听地址失败 ({}): {}", addr, e);
-            std::process::exit(1);
-        });
-    if let Err(e) = axum::serve(listener, app).await {
-        tracing::error!("HTTP 服务异常退出: {}", e);
-        std::process::exit(1);
-    }
+    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+    axum::serve(listener, app).await.unwrap();
 }

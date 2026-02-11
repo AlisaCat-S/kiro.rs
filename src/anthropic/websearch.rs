@@ -42,7 +42,6 @@ pub struct McpArguments {
 
 /// MCP 响应
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub struct McpResponse {
     pub error: Option<McpError>,
     pub id: String,
@@ -59,7 +58,6 @@ pub struct McpError {
 
 /// MCP 结果
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub struct McpResult {
     pub content: Vec<McpContent>,
     #[serde(rename = "isError")]
@@ -76,7 +74,6 @@ pub struct McpContent {
 
 /// WebSearch 搜索结果
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub struct WebSearchResults {
     pub results: Vec<WebSearchResult>,
     #[serde(rename = "totalResults")]
@@ -87,7 +84,6 @@ pub struct WebSearchResults {
 
 /// 单个搜索结果
 #[derive(Debug, Deserialize, Clone)]
-#[allow(dead_code)]
 pub struct WebSearchResult {
     pub title: String,
     pub url: String,
@@ -104,22 +100,11 @@ pub struct WebSearchResult {
 
 /// 检查请求是否为纯 WebSearch 请求
 ///
-/// 条件：tools 中包含 name 为 web_search 的工具，且只有这一个工具
-/// 如果有多个工具，则不走 WebSearch 专用处理（由正常流程处理）
+/// 条件：tools 有且只有一个，且 name 为 web_search
 pub fn has_web_search_tool(req: &MessagesRequest) -> bool {
-    req.tools
-        .as_ref()
-        .is_some_and(|tools| tools.len() == 1 && tools.iter().any(|t| t.name == "web_search"))
-}
-
-/// 检查请求是否包含 WebSearch 工具（不限制工具数量）
-///
-/// 用于判断是否需要特殊处理 web_search 工具
-#[allow(dead_code)]
-pub fn contains_web_search_tool(req: &MessagesRequest) -> bool {
-    req.tools
-        .as_ref()
-        .is_some_and(|tools| tools.iter().any(|t| t.name == "web_search"))
+    req.tools.as_ref().is_some_and(|tools| {
+        tools.len() == 1 && tools.first().is_some_and(|t| t.name == "web_search")
+    })
 }
 
 /// 从消息中提取搜索查询
@@ -147,10 +132,11 @@ pub fn extract_search_query(req: &MessagesRequest) -> Option<String> {
 
     // 去除前缀 "Perform a web search for the query: "
     const PREFIX: &str = "Perform a web search for the query: ";
-    let query = text
-        .strip_prefix(PREFIX)
-        .map(|s| s.to_string())
-        .unwrap_or(text);
+    let query = if text.starts_with(PREFIX) {
+        text[PREFIX.len()..].to_string()
+    } else {
+        text
+    };
 
     if query.is_empty() { None } else { Some(query) }
 }
@@ -193,7 +179,7 @@ pub fn create_mcp_request(query: &str) -> (String, McpRequest) {
     // tool_use_id 使用相同格式
     let tool_use_id = format!(
         "srvtoolu_{}",
-        &Uuid::new_v4().to_string().replace('-', "")[..32]
+        Uuid::new_v4().to_string().replace('-', "")[..32].to_string()
     );
 
     let request = McpRequest {
@@ -252,7 +238,7 @@ fn generate_websearch_events(
     let mut events = Vec::new();
     let message_id = format!(
         "msg_{}",
-        &Uuid::new_v4().to_string().replace('-', "")[..24].to_string()
+        Uuid::new_v4().to_string().replace('-', "")[..24].to_string()
     );
 
     // 1. message_start
@@ -434,7 +420,7 @@ fn generate_search_summary(query: &str, results: &Option<WebSearchResults>) -> S
         for (i, result) in results.results.iter().enumerate() {
             summary.push_str(&format!("{}. **{}**\n", i + 1, result.title));
             if let Some(ref snippet) = result.snippet {
-                // 截断过长的摘要（安全截断 UTF-8，单次遍历）
+                // 截断过长的摘要（安全处理 UTF-8 多字节字符）
                 let truncated = match snippet.char_indices().nth(200) {
                     Some((idx, _)) => format!("{}...", &snippet[..idx]),
                     None => snippet.clone(),
@@ -453,8 +439,6 @@ fn generate_search_summary(query: &str, results: &Option<WebSearchResults>) -> S
 }
 
 /// 处理 WebSearch 请求
-///
-/// 根据 payload.stream 参数决定返回 SSE 流式响应或 JSON 响应
 pub async fn handle_websearch_request(
     provider: std::sync::Arc<crate::kiro::provider::KiroProvider>,
     payload: &MessagesRequest,
@@ -475,7 +459,7 @@ pub async fn handle_websearch_request(
         }
     };
 
-    tracing::info!(query = %query, stream = %payload.stream, "处理 WebSearch 请求");
+    tracing::info!(query = %query, "处理 WebSearch 请求");
 
     // 2. 创建 MCP 请求
     let (tool_use_id, mcp_request) = create_mcp_request(&query);
@@ -489,97 +473,18 @@ pub async fn handle_websearch_request(
         }
     };
 
-    // 4. 根据 stream 参数决定响应格式
-    if payload.stream {
-        // SSE 流式响应
-        let model = payload.model.clone();
-        let stream =
-            create_websearch_sse_stream(model, query, tool_use_id, search_results, input_tokens);
+    // 4. 生成 SSE 响应
+    let model = payload.model.clone();
+    let stream =
+        create_websearch_sse_stream(model, query, tool_use_id, search_results, input_tokens);
 
-        Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, "text/event-stream")
-            .header(header::CACHE_CONTROL, "no-cache")
-            .header(header::CONNECTION, "keep-alive")
-            .body(Body::from_stream(stream))
-            .unwrap()
-    } else {
-        // JSON 非流式响应
-        let json_response = create_websearch_json_response(
-            &payload.model,
-            &query,
-            &tool_use_id,
-            search_results,
-            input_tokens,
-        );
-        (StatusCode::OK, Json(json_response)).into_response()
-    }
-}
-
-/// 创建 WebSearch JSON 响应（非流式）
-fn create_websearch_json_response(
-    model: &str,
-    query: &str,
-    tool_use_id: &str,
-    search_results: Option<WebSearchResults>,
-    input_tokens: i32,
-) -> serde_json::Value {
-    let message_id = format!("msg_{}", &Uuid::new_v4().to_string().replace('-', "")[..24]);
-
-    // 构建搜索结果内容
-    let search_content: Vec<serde_json::Value> = if let Some(ref results) = search_results {
-        results
-            .results
-            .iter()
-            .map(|r| {
-                json!({
-                    "type": "web_search_result",
-                    "title": r.title,
-                    "url": r.url,
-                    "encrypted_content": r.snippet.clone().unwrap_or_default(),
-                    "page_age": null
-                })
-            })
-            .collect()
-    } else {
-        vec![]
-    };
-
-    // 生成摘要文本
-    let summary = generate_search_summary(query, &search_results);
-    let output_tokens = (summary.len() as i32 + 3) / 4;
-
-    json!({
-        "id": message_id,
-        "type": "message",
-        "role": "assistant",
-        "model": model,
-        "content": [
-            {
-                "id": tool_use_id,
-                "type": "server_tool_use",
-                "name": "web_search",
-                "input": {"query": query}
-            },
-            {
-                "type": "web_search_tool_result",
-                "tool_use_id": tool_use_id,
-                "content": search_content
-            },
-            {
-                "type": "text",
-                "text": summary
-            }
-        ],
-        "stop_reason": "end_turn",
-        "stop_sequence": null,
-        "usage": {
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "cache_creation_input_tokens": 0,
-            "cache_read_input_tokens": 0
-        }
-    })
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .header(header::CONNECTION, "keep-alive")
+        .body(Body::from_stream(stream))
+        .unwrap()
 }
 
 /// 调用 Kiro MCP API
@@ -589,18 +494,12 @@ async fn call_mcp_api(
 ) -> anyhow::Result<McpResponse> {
     let request_body = serde_json::to_string(request)?;
 
-    #[cfg(feature = "sensitive-logs")]
     tracing::debug!("MCP request: {}", request_body);
-    #[cfg(not(feature = "sensitive-logs"))]
-    tracing::debug!(mcp_request_bytes = request_body.len(), "已构建 MCP 请求体");
 
     let response = provider.call_mcp(&request_body).await?;
 
     let body = response.text().await?;
-    #[cfg(feature = "sensitive-logs")]
     tracing::debug!("MCP response: {}", body);
-    #[cfg(not(feature = "sensitive-logs"))]
-    tracing::debug!(mcp_response_bytes = body.len(), "收到 MCP 响应");
 
     let mcp_response: McpResponse = serde_json::from_str(&body)?;
 
@@ -616,14 +515,12 @@ async fn call_mcp_api(
 }
 
 #[cfg(test)]
-#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_has_web_search_tool_only_one() {
-        use crate::anthropic::types::Message;
-        use crate::anthropic::types::Tool;
+        use crate::anthropic::types::{Message, Tool};
 
         let req = MessagesRequest {
             model: "claude-sonnet-4".to_string(),
@@ -638,7 +535,7 @@ mod tests {
                 tool_type: Some("web_search_20250305".to_string()),
                 name: "web_search".to_string(),
                 description: String::new(),
-                input_schema: std::collections::HashMap::new(),
+                input_schema: Default::default(),
                 max_uses: Some(8),
             }]),
             tool_choice: None,
@@ -652,8 +549,7 @@ mod tests {
 
     #[test]
     fn test_has_web_search_tool_multiple_tools() {
-        use crate::anthropic::types::Message;
-        use crate::anthropic::types::Tool;
+        use crate::anthropic::types::{Message, Tool};
 
         let req = MessagesRequest {
             model: "claude-sonnet-4".to_string(),
@@ -669,17 +565,14 @@ mod tests {
                     tool_type: Some("web_search_20250305".to_string()),
                     name: "web_search".to_string(),
                     description: String::new(),
-                    input_schema: std::collections::HashMap::new(),
+                    input_schema: Default::default(),
                     max_uses: Some(8),
                 },
                 Tool {
                     tool_type: None,
                     name: "other_tool".to_string(),
                     description: "Other tool".to_string(),
-                    input_schema: std::collections::HashMap::from([(
-                        "type".to_string(),
-                        serde_json::json!("object"),
-                    )]),
+                    input_schema: Default::default(),
                     max_uses: None,
                 },
             ]),

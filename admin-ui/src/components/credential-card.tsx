@@ -280,6 +280,12 @@ export function CredentialCard({
                 <span className="text-muted-foreground">—</span>
               )}
             </div>
+            {credential.hasProxy && (
+              <div className="col-span-2">
+                <span className="text-muted-foreground">代理：</span>
+                <span className="font-medium">{credential.proxyUrl}</span>
+              </div>
+            )}
             {credential.hasProfileArn && (
               <div className="col-span-2">
                 <Badge variant="secondary">有 Profile ARN</Badge>

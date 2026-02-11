@@ -9,13 +9,35 @@ use uuid::Uuid;
 
 use crate::kiro::model::events::Event;
 
+/// 找到小于等于目标位置的最近有效UTF-8字符边界
+///
+/// UTF-8字符可能占用1-4个字节，直接按字节位置切片可能会切在多字节字符中间导致panic。
+/// 这个函数从目标位置向前搜索，找到最近的有效字符边界。
+fn find_char_boundary(s: &str, target: usize) -> usize {
+    if target >= s.len() {
+        return s.len();
+    }
+    if target == 0 {
+        return 0;
+    }
+    // 从目标位置向前搜索有效的字符边界
+    let mut pos = target;
+    while pos > 0 && !s.is_char_boundary(pos) {
+        pos -= 1;
+    }
+    pos
+}
+
 /// 需要跳过的包裹字符
 ///
 /// 当 thinking 标签被这些字符包裹时，认为是在引用标签而非真正的标签：
 /// - 反引号 (`)：行内代码
 /// - 双引号 (")：字符串
 /// - 单引号 (')：字符串
-const QUOTE_CHARS: &[u8] = b"`\"'\\#!@$%^&*()-_=+[]{};:<>,.?/";
+const QUOTE_CHARS: &[u8] = &[
+    b'`', b'"', b'\'', b'\\', b'#', b'!', b'@', b'$', b'%', b'^', b'&', b'*', b'(', b')', b'-',
+    b'_', b'=', b'+', b'[', b']', b'{', b'}', b';', b':', b'<', b'>', b',', b'.', b'?', b'/',
+];
 
 /// 检查指定位置的字符是否是引用字符
 fn is_quote_char(buffer: &str, pos: usize) -> bool {
@@ -255,35 +277,9 @@ impl SseStateManager {
         self.has_tool_use = has;
     }
 
-    /// stop_reason 优先级（索引越小优先级越高）
-    const STOP_REASON_PRIORITY: &'static [&'static str] = &[
-        "model_context_window_exceeded",
-        "max_tokens",
-        "tool_use",
-        "end_turn",
-    ];
-
-    /// 获取 stop_reason 的优先级（越小越高，未知原因返回 usize::MAX）
-    fn stop_reason_priority(reason: &str) -> usize {
-        Self::STOP_REASON_PRIORITY
-            .iter()
-            .position(|&r| r == reason)
-            .unwrap_or(usize::MAX)
-    }
-
-    /// 设置 stop_reason（高优先级原因可覆盖低优先级原因）
-    ///
-    /// 优先级从高到低：model_context_window_exceeded > max_tokens > tool_use > end_turn
+    /// 设置 stop_reason
     pub fn set_stop_reason(&mut self, reason: impl Into<String>) {
-        let reason = reason.into();
-        let new_priority = Self::stop_reason_priority(&reason);
-        let should_set = match &self.stop_reason {
-            None => true,
-            Some(current) => new_priority < Self::stop_reason_priority(current),
-        };
-        if should_set {
-            self.stop_reason = Some(reason);
-        }
+        self.stop_reason = Some(reason.into());
     }
 
     /// 检查是否存在非 thinking 类型的内容块（如 text 或 tool_use）
@@ -344,8 +340,7 @@ impl SseStateManager {
         // 检查块是否已存在
         if let Some(block) = self.active_blocks.get_mut(&index) {
             if block.started {
-                // 正常流式响应中会频繁触发，注释掉避免日志噪音
-                // tracing::debug!("块 {} 已启动，跳过重复的 content_block_start", index);
+                tracing::debug!("块 {} 已启动，跳过重复的 content_block_start", index);
                 return events;
             }
             block.started = true;
@@ -596,7 +591,7 @@ impl StreamContext {
                         .set_stop_reason("model_context_window_exceeded");
                 }
                 tracing::debug!(
-                    "收到 contextUsageEvent: {:.4}%, 计算 input_tokens: {}",
+                    "收到 contextUsageEvent: {}%, 计算 input_tokens: {}",
                     context_usage.context_usage_percentage,
                     actual_input_tokens
                 );
@@ -691,7 +686,7 @@ impl StreamContext {
                         .thinking_buffer
                         .len()
                         .saturating_sub("<thinking>".len());
-                    let safe_len = self.thinking_buffer.floor_char_boundary(target_len);
+                    let safe_len = find_char_boundary(&self.thinking_buffer, target_len);
                     if safe_len > 0 {
                         let safe_content = self.thinking_buffer[..safe_len].to_string();
                         // 如果 thinking 尚未提取，且安全内容只是空白字符，
@@ -723,12 +718,12 @@ impl StreamContext {
                 if let Some(end_pos) = find_real_thinking_end_tag(&self.thinking_buffer) {
                     // 提取 thinking 内容
                     let thinking_content = self.thinking_buffer[..end_pos].to_string();
-                    if !thinking_content.is_empty()
-                        && let Some(thinking_index) = self.thinking_block_index
-                    {
-                        events.push(
-                            self.create_thinking_delta_event(thinking_index, &thinking_content),
-                        );
+                    if !thinking_content.is_empty() {
+                        if let Some(thinking_index) = self.thinking_block_index {
+                            events.push(
+                                self.create_thinking_delta_event(thinking_index, &thinking_content),
+                            );
+                        }
                     }
 
                     // 结束 thinking 块
@@ -761,15 +756,15 @@ impl StreamContext {
                         .thinking_buffer
                         .len()
                         .saturating_sub("</thinking>\n\n".len());
-                    let safe_len = self.thinking_buffer.floor_char_boundary(target_len);
+                    let safe_len = find_char_boundary(&self.thinking_buffer, target_len);
                     if safe_len > 0 {
                         let safe_content = self.thinking_buffer[..safe_len].to_string();
-                        if !safe_content.is_empty()
-                            && let Some(thinking_index) = self.thinking_block_index
-                        {
-                            events.push(
-                                self.create_thinking_delta_event(thinking_index, &safe_content),
-                            );
+                        if !safe_content.is_empty() {
+                            if let Some(thinking_index) = self.thinking_block_index {
+                                events.push(
+                                    self.create_thinking_delta_event(thinking_index, &safe_content),
+                                );
+                            }
                         }
                         self.thinking_buffer = self.thinking_buffer[safe_len..].to_string();
                     }
@@ -799,11 +794,11 @@ impl StreamContext {
         let mut events = Vec::new();
 
         // 如果当前 text_block_index 指向的块已经被关闭（例如 tool_use 开始时自动 stop），
-        // 则丢弃该索引并创建新的文本块继续输出，避免 delta 被状态机拒绝导致"吞字"。
-        if let Some(idx) = self.text_block_index
-            && !self.state_manager.is_block_open_of_type(idx, "text")
-        {
-            self.text_block_index = None;
+        // 则丢弃该索引并创建新的文本块继续输出，避免 delta 被状态机拒绝导致“吞字”。
+        if let Some(idx) = self.text_block_index {
+            if !self.state_manager.is_block_open_of_type(idx, "text") {
+                self.text_block_index = None;
+            }
         }
 
         // 获取或创建文本块索引
@@ -876,30 +871,31 @@ impl StreamContext {
         // tool_use 必须发生在 thinking 结束之后。
         // 但当 `</thinking>` 后面没有 `\n\n`（例如紧跟 tool_use 或流结束）时，
         // thinking 结束标签会滞留在 thinking_buffer，导致后续 flush 时把 `</thinking>` 当作内容输出。
-        // 这里在开始 tool_use block 前做一次"边界场景"的结束标签识别与过滤。
-        if self.thinking_enabled
-            && self.in_thinking_block
-            && let Some(end_pos) = find_real_thinking_end_tag_at_buffer_end(&self.thinking_buffer)
-        {
-            let thinking_content = self.thinking_buffer[..end_pos].to_string();
-            if !thinking_content.is_empty()
-                && let Some(thinking_index) = self.thinking_block_index
-            {
-                events.push(self.create_thinking_delta_event(thinking_index, &thinking_content));
-            }
+        // 这里在开始 tool_use block 前做一次“边界场景”的结束标签识别与过滤。
+        if self.thinking_enabled && self.in_thinking_block {
+            if let Some(end_pos) = find_real_thinking_end_tag_at_buffer_end(&self.thinking_buffer) {
+                let thinking_content = self.thinking_buffer[..end_pos].to_string();
+                if !thinking_content.is_empty() {
+                    if let Some(thinking_index) = self.thinking_block_index {
+                        events.push(
+                            self.create_thinking_delta_event(thinking_index, &thinking_content),
+                        );
+                    }
+                }
 
-            // 结束 thinking 块
-            self.in_thinking_block = false;
-            self.thinking_extracted = true;
+                // 结束 thinking 块
+                self.in_thinking_block = false;
+                self.thinking_extracted = true;
 
-            if let Some(thinking_index) = self.thinking_block_index {
-                // 先发送空的 thinking_delta
-                events.push(self.create_thinking_delta_event(thinking_index, ""));
-                // 再发送 content_block_stop
-                if let Some(stop_event) =
-                    self.state_manager.handle_content_block_stop(thinking_index)
-                {
-                    events.push(stop_event);
+                if let Some(thinking_index) = self.thinking_block_index {
+                    // 先发送空的 thinking_delta
+                    events.push(self.create_thinking_delta_event(thinking_index, ""));
+                    // 再发送 content_block_stop
+                    if let Some(stop_event) =
+                        self.state_manager.handle_content_block_stop(thinking_index)
+                    {
+                        events.push(stop_event);
+                    }
                 }
 
                 // 把结束标签后的内容当作普通文本（通常为空或空白）
@@ -971,10 +967,10 @@ impl StreamContext {
         }
 
         // 如果是完整的工具调用（stop=true），发送 content_block_stop
-        if tool_use.stop
-            && let Some(stop_event) = self.state_manager.handle_content_block_stop(block_index)
-        {
-            events.push(stop_event);
+        if tool_use.stop {
+            if let Some(stop_event) = self.state_manager.handle_content_block_stop(block_index) {
+                events.push(stop_event);
+            }
         }
 
         events
@@ -992,12 +988,12 @@ impl StreamContext {
                     find_real_thinking_end_tag_at_buffer_end(&self.thinking_buffer)
                 {
                     let thinking_content = self.thinking_buffer[..end_pos].to_string();
-                    if !thinking_content.is_empty()
-                        && let Some(thinking_index) = self.thinking_block_index
-                    {
-                        events.push(
-                            self.create_thinking_delta_event(thinking_index, &thinking_content),
-                        );
+                    if !thinking_content.is_empty() {
+                        if let Some(thinking_index) = self.thinking_block_index {
+                            events.push(
+                                self.create_thinking_delta_event(thinking_index, &thinking_content),
+                            );
+                        }
                     }
 
                     // 关闭 thinking 块：先发送空的 thinking_delta，再发送 content_block_stop
@@ -1149,11 +1145,12 @@ impl BufferedStreamContext {
 
         // 更正 message_start 事件中的 input_tokens
         for event in &mut self.event_buffer {
-            if event.event == "message_start"
-                && let Some(message) = event.data.get_mut("message")
-                && let Some(usage) = message.get_mut("usage")
-            {
-                usage["input_tokens"] = serde_json::json!(final_input_tokens);
+            if event.event == "message_start" {
+                if let Some(message) = event.data.get_mut("message") {
+                    if let Some(usage) = message.get_mut("usage") {
+                        usage["input_tokens"] = serde_json::json!(final_input_tokens);
+                    }
+                }
             }
         }
 
@@ -1647,12 +1644,7 @@ mod tests {
 
         let full_thinking: String = thinking_deltas
             .iter()
-            .filter(|e| {
-                !e.data["delta"]["thinking"]
-                    .as_str()
-                    .unwrap_or("")
-                    .is_empty()
-            })
+            .filter(|e| !e.data["delta"]["thinking"].as_str().unwrap_or("").is_empty())
             .map(|e| e.data["delta"]["thinking"].as_str().unwrap_or(""))
             .collect();
 
@@ -1665,11 +1657,14 @@ mod tests {
         let mut ctx = StreamContext::new_with_thinking("test-model", 1, true);
         let _initial_events = ctx.generate_initial_events();
 
-        let events = ctx.process_assistant_response("<thinking>\nabc</thinking>\n\n你好");
+        let events =
+            ctx.process_assistant_response("<thinking>\nabc</thinking>\n\n你好");
 
         let text_deltas: Vec<_> = events
             .iter()
-            .filter(|e| e.event == "content_block_delta" && e.data["delta"]["type"] == "text_delta")
+            .filter(|e| {
+                e.event == "content_block_delta" && e.data["delta"]["type"] == "text_delta"
+            })
             .collect();
 
         let full_text: String = text_deltas
@@ -1701,7 +1696,9 @@ mod tests {
     fn collect_text_content(events: &[SseEvent]) -> String {
         events
             .iter()
-            .filter(|e| e.event == "content_block_delta" && e.data["delta"]["type"] == "text_delta")
+            .filter(|e| {
+                e.event == "content_block_delta" && e.data["delta"]["type"] == "text_delta"
+            })
             .map(|e| e.data["delta"]["text"].as_str().unwrap_or(""))
             .collect()
     }
@@ -1720,11 +1717,7 @@ mod tests {
         all.extend(ctx.generate_final_events());
 
         let thinking = collect_thinking_content(&all);
-        assert_eq!(
-            thinking, "abc",
-            "thinking should be 'abc', got: {:?}",
-            thinking
-        );
+        assert_eq!(thinking, "abc", "thinking should be 'abc', got: {:?}", thinking);
 
         let text = collect_text_content(&all);
         assert_eq!(text, "你好", "text should be '你好', got: {:?}", text);
@@ -1742,11 +1735,7 @@ mod tests {
         all.extend(ctx.generate_final_events());
 
         let thinking = collect_thinking_content(&all);
-        assert_eq!(
-            thinking, "abc",
-            "thinking should be 'abc', got: {:?}",
-            thinking
-        );
+        assert_eq!(thinking, "abc", "thinking should be 'abc', got: {:?}", thinking);
 
         let text = collect_text_content(&all);
         assert_eq!(text, "你好", "text should be '你好', got: {:?}", text);
@@ -1766,11 +1755,7 @@ mod tests {
         all.extend(ctx.generate_final_events());
 
         let thinking = collect_thinking_content(&all);
-        assert_eq!(
-            thinking, "abc",
-            "thinking should be 'abc', got: {:?}",
-            thinking
-        );
+        assert_eq!(thinking, "abc", "thinking should be 'abc', got: {:?}", thinking);
 
         let text = collect_text_content(&all);
         assert_eq!(text, "text", "text should be 'text', got: {:?}", text);
@@ -1799,11 +1784,7 @@ mod tests {
         all.extend(ctx.generate_final_events());
 
         let thinking = collect_thinking_content(&all);
-        assert_eq!(
-            thinking, "hello",
-            "thinking should be 'hello', got: {:?}",
-            thinking
-        );
+        assert_eq!(thinking, "hello", "thinking should be 'hello', got: {:?}", thinking);
 
         let text = collect_text_content(&all);
         assert_eq!(text, "world", "text should be 'world', got: {:?}", text);
@@ -1893,14 +1874,12 @@ mod tests {
 
         let mut all_events = Vec::new();
         all_events.extend(ctx.process_assistant_response("<thinking>\nabc</thinking>"));
-        all_events.extend(
-            ctx.process_tool_use(&crate::kiro::model::events::ToolUseEvent {
-                name: "test_tool".to_string(),
-                tool_use_id: "tool_1".to_string(),
-                input: "{}".to_string(),
-                stop: true,
-            }),
-        );
+        all_events.extend(ctx.process_tool_use(&crate::kiro::model::events::ToolUseEvent {
+            name: "test_tool".to_string(),
+            tool_use_id: "tool_1".to_string(),
+            input: "{}".to_string(),
+            stop: true,
+        }));
         all_events.extend(ctx.generate_final_events());
 
         let message_delta = all_events
@@ -1912,80 +1891,5 @@ mod tests {
             message_delta.data["delta"]["stop_reason"], "tool_use",
             "stop_reason should be tool_use when tool_use is present"
         );
-    }
-
-    #[test]
-    fn test_stop_reason_priority_high_overrides_low() {
-        let mut manager = SseStateManager::new();
-
-        // 先设置低优先级
-        manager.set_stop_reason("end_turn");
-        assert_eq!(manager.stop_reason, Some("end_turn".to_string()));
-
-        // 高优先级应覆盖
-        manager.set_stop_reason("max_tokens");
-        assert_eq!(manager.stop_reason, Some("max_tokens".to_string()));
-
-        // 更高优先级应覆盖
-        manager.set_stop_reason("model_context_window_exceeded");
-        assert_eq!(
-            manager.stop_reason,
-            Some("model_context_window_exceeded".to_string())
-        );
-    }
-
-    #[test]
-    fn test_stop_reason_priority_low_cannot_override_high() {
-        let mut manager = SseStateManager::new();
-
-        // 先设置高优先级
-        manager.set_stop_reason("model_context_window_exceeded");
-        assert_eq!(
-            manager.stop_reason,
-            Some("model_context_window_exceeded".to_string())
-        );
-
-        // 低优先级不应覆盖
-        manager.set_stop_reason("max_tokens");
-        assert_eq!(
-            manager.stop_reason,
-            Some("model_context_window_exceeded".to_string())
-        );
-
-        manager.set_stop_reason("end_turn");
-        assert_eq!(
-            manager.stop_reason,
-            Some("model_context_window_exceeded".to_string())
-        );
-    }
-
-    #[test]
-    fn test_stop_reason_priority_same_level_no_override() {
-        let mut manager = SseStateManager::new();
-
-        // 先设置 tool_use
-        manager.set_stop_reason("tool_use");
-        assert_eq!(manager.stop_reason, Some("tool_use".to_string()));
-
-        // 同优先级不覆盖
-        manager.set_stop_reason("tool_use");
-        assert_eq!(manager.stop_reason, Some("tool_use".to_string()));
-    }
-
-    #[test]
-    fn test_stop_reason_priority_unknown_reason() {
-        let mut manager = SseStateManager::new();
-
-        // 未知原因应被设置（优先级最低）
-        manager.set_stop_reason("unknown_reason");
-        assert_eq!(manager.stop_reason, Some("unknown_reason".to_string()));
-
-        // 已知原因应覆盖未知原因
-        manager.set_stop_reason("end_turn");
-        assert_eq!(manager.stop_reason, Some("end_turn".to_string()));
-
-        // 未知原因不应覆盖已知原因
-        manager.set_stop_reason("another_unknown");
-        assert_eq!(manager.stop_reason, Some("end_turn".to_string()));
     }
 }

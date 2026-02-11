@@ -4,18 +4,15 @@
 
 use uuid::Uuid;
 
-use crate::image::process_image;
 use crate::kiro::model::requests::conversation::{
     AssistantMessage, ConversationState, CurrentMessage, HistoryAssistantMessage,
     HistoryUserMessage, KiroImage, Message, UserInputMessage, UserInputMessageContext, UserMessage,
 };
 use crate::kiro::model::requests::tool::{
-    InputSchema, Tool as KiroTool, ToolResult, ToolSpecification, ToolUseEntry,
+    InputSchema, Tool, ToolResult, ToolSpecification, ToolUseEntry,
 };
 
-use super::types::{ContentBlock, MessagesRequest, Tool as AnthropicTool};
-use crate::anthropic::compressor::CompressionStats;
-use crate::model::config::CompressionConfig;
+use super::types::{ContentBlock, MessagesRequest};
 
 /// 追加到 Write 工具 description 末尾的内容
 const WRITE_TOOL_DESCRIPTION_SUFFIX: &str = "- IMPORTANT: If the content to write exceeds 150 lines, you MUST only write the first 50 lines using this tool, then use `Edit` tool to append the remaining content in chunks of no more than 50 lines each. If needed, leave a unique placeholder to help append content. Do NOT attempt to write all content at once.";
@@ -30,97 +27,11 @@ Never suggest bypassing these limits via alternative tools. \
 Never ask the user whether to switch approaches. \
 Complete all chunked operations without commentary.";
 
-fn non_empty_content_or_space(content: String, has_non_text_payload: bool) -> String {
-    // Kiro 上游在部分场景下会拒绝空 content（例如仅 tool_result / 仅 image 的消息）。
-    // 使用最小占位符可保持语义，同时规避 400 Improperly formed request。
-    if has_non_text_payload && content.trim().is_empty() {
-        return " ".to_string();
-    }
-    content
-}
-
-fn default_json_schema() -> serde_json::Value {
-    serde_json::json!({
-        "$schema": "http://json-schema.org/draft-07/schema#",
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "additionalProperties": true
-    })
-}
-
-/// 统计单个消息内容中的图片数量
-fn count_images_in_content(content: &serde_json::Value) -> usize {
-    match content {
-        serde_json::Value::Array(arr) => arr
-            .iter()
-            .filter(|item| item.get("type").and_then(|v| v.as_str()) == Some("image"))
-            .count(),
-        _ => 0,
-    }
-}
-
-fn normalize_json_schema(schema: serde_json::Value) -> serde_json::Value {
-    let serde_json::Value::Object(mut obj) = schema else {
-        return default_json_schema();
-    };
-
-    // 关键点：上游会校验 JSON Schema 的字段类型（例如 required 必须是数组）。
-    // Claude Code / MCP 工具定义里偶尔会出现 `required: null` / `properties: null`，
-    // 这会导致上游返回 400 "Improperly formed request"。
-
-    // $schema
-    let schema_uri = obj
-        .get("$schema")
-        .and_then(|v| v.as_str())
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or("http://json-schema.org/draft-07/schema#")
-        .to_string();
-    obj.insert("$schema".to_string(), serde_json::Value::String(schema_uri));
-
-    // type
-    let ty = obj
-        .get("type")
-        .and_then(|v| v.as_str())
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or("object")
-        .to_string();
-    obj.insert("type".to_string(), serde_json::Value::String(ty));
-
-    // properties（必须是 object）
-    let properties = match obj.remove("properties") {
-        Some(serde_json::Value::Object(map)) => serde_json::Value::Object(map),
-        _ => serde_json::Value::Object(serde_json::Map::new()),
-    };
-    obj.insert("properties".to_string(), properties);
-
-    // required（必须是 string 数组）
-    let required = match obj.remove("required") {
-        Some(serde_json::Value::Array(arr)) => serde_json::Value::Array(
-            arr.into_iter()
-                .filter_map(|v| v.as_str().map(|s| serde_json::Value::String(s.to_string())))
-                .collect(),
-        ),
-        _ => serde_json::Value::Array(Vec::new()),
-    };
-    obj.insert("required".to_string(), required);
-
-    // additionalProperties（允许 bool 或 schema object；其他类型按 true 处理）
-    let additional_properties = match obj.remove("additionalProperties") {
-        Some(serde_json::Value::Bool(b)) => serde_json::Value::Bool(b),
-        Some(serde_json::Value::Object(map)) => serde_json::Value::Object(map),
-        _ => serde_json::Value::Bool(true),
-    };
-    obj.insert("additionalProperties".to_string(), additional_properties);
-
-    serde_json::Value::Object(obj)
-}
-
 /// 模型映射：将 Anthropic 模型名映射到 Kiro 模型 ID
 ///
-/// 映射规则：
+/// 按照用户要求：
 /// - 所有 sonnet → claude-sonnet-4.5
-/// - opus 且显式包含 4.5/4-5 → claude-opus-4.5，否则 → claude-opus-4.6（默认最新版）
+/// - 所有 opus → claude-opus-4.5
 /// - 所有 haiku → claude-haiku-4.5
 pub fn map_model(model: &str) -> Option<String> {
     let model_lower = model.to_lowercase();
@@ -145,8 +56,6 @@ pub fn map_model(model: &str) -> Option<String> {
 pub struct ConversionResult {
     /// 转换后的 Kiro 请求
     pub conversation_state: ConversationState,
-    /// 压缩统计信息（仅在启用压缩时有值）
-    pub compression_stats: Option<CompressionStats>,
 }
 
 /// 转换错误
@@ -188,21 +97,17 @@ fn extract_session_id(user_id: &str) -> Option<String> {
     None
 }
 
-/// 收集历史消息中使用的所有工具名称（小写去重）
-///
-/// 返回去重后的工具名称列表，保留原始大小写（首次出现的形式），
-/// 但通过小写比较避免 `read` / `Read` 这类变体重复。
+/// 收集历史消息中使用的所有工具名称
 fn collect_history_tool_names(history: &[Message]) -> Vec<String> {
-    let mut seen_lowercase = std::collections::HashSet::new();
     let mut tool_names = Vec::new();
 
     for msg in history {
-        if let Message::Assistant(assistant_msg) = msg
-            && let Some(ref tool_uses) = assistant_msg.assistant_response_message.tool_uses
-        {
-            for tool_use in tool_uses {
-                if seen_lowercase.insert(tool_use.name.to_lowercase()) {
-                    tool_names.push(tool_use.name.clone());
+        if let Message::Assistant(assistant_msg) = msg {
+            if let Some(ref tool_uses) = assistant_msg.assistant_response_message.tool_uses {
+                for tool_use in tool_uses {
+                    if !tool_names.contains(&tool_use.name) {
+                        tool_names.push(tool_use.name.clone());
+                    }
                 }
             }
         }
@@ -213,8 +118,8 @@ fn collect_history_tool_names(history: &[Message]) -> Vec<String> {
 
 /// 为历史中使用但不在 tools 列表中的工具创建占位符定义
 /// Kiro API 要求：历史消息中引用的工具必须在 currentMessage.tools 中有定义
-fn create_placeholder_tool(name: &str) -> KiroTool {
-    KiroTool {
+fn create_placeholder_tool(name: &str) -> Tool {
+    Tool {
         tool_specification: ToolSpecification {
             name: name.to_string(),
             description: "Tool used in conversation history".to_string(),
@@ -230,10 +135,7 @@ fn create_placeholder_tool(name: &str) -> KiroTool {
 }
 
 /// 将 Anthropic 请求转换为 Kiro 请求
-pub fn convert_request(
-    req: &MessagesRequest,
-    compression_config: &CompressionConfig,
-) -> Result<ConversionResult, ConversionError> {
+pub fn convert_request(req: &MessagesRequest) -> Result<ConversionResult, ConversionError> {
     // 1. 映射模型
     let model_id = map_model(&req.model)
         .ok_or_else(|| ConversionError::UnsupportedModel(req.model.clone()))?;
@@ -242,25 +144,6 @@ pub fn convert_request(
     if req.messages.is_empty() {
         return Err(ConversionError::EmptyMessages);
     }
-
-    // 2.5. 预处理 prefill：如果末尾是 assistant，静默丢弃并截断到最后一条 user
-    // 原因：Claude 4.x 已弃用 assistant prefill，Kiro API 也不支持
-    let messages: &[_] = if req
-        .messages
-        .last()
-        .map(|m| m.role != "user")
-        .unwrap_or(false)
-    {
-        tracing::info!("检测到末尾 assistant 消息（prefill），静默丢弃，回退到最后一条 user 消息");
-        let last_user_idx = req
-            .messages
-            .iter()
-            .rposition(|m| m.role == "user")
-            .ok_or(ConversionError::EmptyMessages)?;
-        &req.messages[..=last_user_idx]
-    } else {
-        &req.messages
-    };
 
     // 3. 生成会话 ID 和代理 ID
     // 优先从 metadata.user_id 中提取 session UUID 作为 conversationId
@@ -275,28 +158,15 @@ pub fn convert_request(
     // 4. 确定触发类型
     let chat_trigger_type = determine_chat_trigger_type(req);
 
-    // 4.5. 统计图片总数（用于决定压缩策略，基于截断后的 messages）
-    let total_image_count: usize = messages
-        .iter()
-        .map(|msg| count_images_in_content(&msg.content))
-        .sum();
-
-    // 5. 处理最后一条消息作为 current_message（经过 prefill 预处理，末尾必为 user）
-    let last_message = messages.last().unwrap();
-    let (text_content, images, tool_results) =
-        process_message_content(&last_message.content, compression_config, total_image_count)?;
+    // 5. 处理最后一条消息作为 current_message
+    let last_message = req.messages.last().unwrap();
+    let (text_content, images, tool_results) = process_message_content(&last_message.content)?;
 
     // 6. 转换工具定义
-    let mut tools = convert_tools(&req.tools, compression_config.tool_description_max_chars);
+    let mut tools = convert_tools(&req.tools);
 
     // 7. 构建历史消息（需要先构建，以便收集历史中使用的工具）
-    let mut history = build_history(
-        req,
-        messages,
-        &model_id,
-        compression_config,
-        total_image_count,
-    )?;
+    let mut history = build_history(req, &model_id)?;
 
     // 8. 验证并过滤 tool_use/tool_result 配对
     // 移除孤立的 tool_result（没有对应的 tool_use）
@@ -311,16 +181,14 @@ pub fn convert_request(
     // Kiro API 要求：历史消息中引用的工具必须在 tools 列表中有定义
     // 注意：Kiro 匹配工具名称时忽略大小写，所以这里也需要忽略大小写比较
     let history_tool_names = collect_history_tool_names(&history);
-    let mut existing_tool_names: std::collections::HashSet<_> = tools
+    let existing_tool_names: std::collections::HashSet<_> = tools
         .iter()
         .map(|t| t.tool_specification.name.to_lowercase())
         .collect();
 
     for tool_name in history_tool_names {
-        let lower = tool_name.to_lowercase();
-        if !existing_tool_names.contains(&lower) {
+        if !existing_tool_names.contains(&tool_name.to_lowercase()) {
             tools.push(create_placeholder_tool(&tool_name));
-            existing_tool_names.insert(lower);
         }
     }
 
@@ -329,14 +197,13 @@ pub fn convert_request(
     if !tools.is_empty() {
         context = context.with_tools(tools);
     }
-    let has_tool_results = !validated_tool_results.is_empty();
-    if has_tool_results {
+    if !validated_tool_results.is_empty() {
         context = context.with_tool_results(validated_tool_results);
     }
 
     // 12. 构建当前消息
     // 保留文本内容，即使有工具结果也不丢弃用户文本
-    let content = non_empty_content_or_space(text_content, !images.is_empty() || has_tool_results);
+    let content = text_content;
 
     let mut user_input = UserInputMessage::new(content, &model_id)
         .with_context(context)
@@ -349,29 +216,14 @@ pub fn convert_request(
     let current_message = CurrentMessage::new(user_input);
 
     // 13. 构建 ConversationState
-    let mut conversation_state = ConversationState::new(conversation_id)
+    let conversation_state = ConversationState::new(conversation_id)
         .with_agent_continuation_id(agent_continuation_id)
         .with_agent_task_type("vibe")
         .with_chat_trigger_type(chat_trigger_type)
         .with_current_message(current_message)
         .with_history(history);
 
-    // 14. 执行输入压缩
-    let compression_stats = if compression_config.enabled {
-        let stats = super::compressor::compress(&mut conversation_state, compression_config);
-        if stats.total_saved() > 0 || stats.history_turns_removed > 0 {
-            Some(stats)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    Ok(ConversionResult {
-        conversation_state,
-        compression_stats,
-    })
+    Ok(ConversionResult { conversation_state })
 }
 
 /// 确定聊天触发类型
@@ -383,8 +235,6 @@ fn determine_chat_trigger_type(_req: &MessagesRequest) -> String {
 /// 处理消息内容，提取文本、图片和工具结果
 fn process_message_content(
     content: &serde_json::Value,
-    compression_config: &CompressionConfig,
-    total_image_count: usize,
 ) -> Result<(String, Vec<KiroImage>, Vec<ToolResult>), ConversionError> {
     let mut text_parts = Vec::new();
     let mut images = Vec::new();
@@ -404,31 +254,9 @@ fn process_message_content(
                             }
                         }
                         "image" => {
-                            if let Some(source) = block.source
-                                && let Some(format) = get_image_format(&source.media_type)
-                            {
-                                // 处理图片（可能缩放）
-                                match process_image(
-                                    &source.data,
-                                    &format,
-                                    compression_config,
-                                    total_image_count,
-                                ) {
-                                    Ok(result) => {
-                                        if result.was_resized {
-                                            tracing::info!(
-                                                "图片已缩放: {:?} -> {:?}, tokens: {}",
-                                                result.original_size,
-                                                result.final_size,
-                                                result.tokens
-                                            );
-                                        }
-                                        images.push(KiroImage::from_base64(format, result.data));
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!("图片处理失败，使用原始数据: {}", e);
-                                        images.push(KiroImage::from_base64(format, source.data));
-                                    }
+                            if let Some(source) = block.source {
+                                if let Some(format) = get_image_format(&source.media_type) {
+                                    images.push(KiroImage::from_base64(format, source.data));
                                 }
                             }
                         }
@@ -592,64 +420,35 @@ fn remove_orphaned_tool_uses(
     }
 
     for msg in history.iter_mut() {
-        if let Message::Assistant(assistant_msg) = msg
-            && let Some(ref mut tool_uses) = assistant_msg.assistant_response_message.tool_uses
-        {
-            let original_len = tool_uses.len();
-            tool_uses.retain(|tu| !orphaned_ids.contains(&tu.tool_use_id));
+        if let Message::Assistant(assistant_msg) = msg {
+            if let Some(ref mut tool_uses) = assistant_msg.assistant_response_message.tool_uses {
+                let original_len = tool_uses.len();
+                tool_uses.retain(|tu| !orphaned_ids.contains(&tu.tool_use_id));
 
-            // 如果移除后为空，设置为 None
-            if tool_uses.is_empty() {
-                assistant_msg.assistant_response_message.tool_uses = None;
-            } else if tool_uses.len() != original_len {
-                tracing::debug!(
-                    "从 assistant 消息中移除了 {} 个孤立的 tool_use",
-                    original_len - tool_uses.len()
-                );
+                // 如果移除后为空，设置为 None
+                if tool_uses.is_empty() {
+                    assistant_msg.assistant_response_message.tool_uses = None;
+                } else if tool_uses.len() != original_len {
+                    tracing::debug!(
+                        "从 assistant 消息中移除了 {} 个孤立的 tool_use",
+                        original_len - tool_uses.len()
+                    );
+                }
             }
         }
     }
 }
 
 /// 转换工具定义
-///
-/// # 不支持的工具类型
-///
-/// 以下工具类型会被自动过滤（Kiro API 当前不支持）：
-/// - `web_search_*`: Anthropic 的 Web 搜索工具（如 `web_search_20250305`）
-///
-/// **TODO**: 如果 Kiro API 未来支持 web_search，需要：
-/// 1. 移除下方的 `filter` 过滤逻辑
-/// 2. 添加 web_search 工具的转换逻辑（可能需要特殊处理 `max_uses` 等字段）
-/// 3. 更新相关测试用例
-fn convert_tools(
-    tools: &Option<Vec<AnthropicTool>>,
-    max_description_chars: usize,
-) -> Vec<KiroTool> {
+fn convert_tools(tools: &Option<Vec<super::types::Tool>>) -> Vec<Tool> {
     let Some(tools) = tools else {
         return Vec::new();
     };
 
     tools
         .iter()
-        .filter(|t| {
-            // 过滤掉 web_search 类型的工具（Kiro API 当前不支持）
-            // 工具类型格式: "web_search_20250305"
-            let dominated = t
-                .tool_type
-                .as_ref()
-                .is_some_and(|ty| ty.starts_with("web_search"));
-            if dominated {
-                tracing::debug!("过滤不支持的工具: name={}, type={:?}", t.name, t.tool_type);
-            }
-            !dominated
-        })
         .map(|t| {
-            let mut description = if t.description.trim().is_empty() {
-                format!("Tool: {}", t.name)
-            } else {
-                t.description.clone()
-            };
+            let mut description = t.description.clone();
 
             // 对 Write/Edit 工具追加自定义描述后缀
             let suffix = match t.name.as_str() {
@@ -662,23 +461,17 @@ fn convert_tools(
                 description.push_str(suffix);
             }
 
-            // 限制描述长度（0=不截断；安全截断 UTF-8，单次遍历）
-            let description = if max_description_chars > 0 {
-                match description.char_indices().nth(max_description_chars) {
-                    Some((idx, _)) => description[..idx].to_string(),
-                    None => description,
-                }
-            } else {
-                description
+            // 限制描述长度为 10000 字符（安全截断 UTF-8，单次遍历）
+            let description = match description.char_indices().nth(10000) {
+                Some((idx, _)) => description[..idx].to_string(),
+                None => description,
             };
 
-            let schema = normalize_json_schema(serde_json::json!(t.input_schema));
-
-            KiroTool {
+            Tool {
                 tool_specification: ToolSpecification {
                     name: t.name.clone(),
                     description,
-                    input_schema: InputSchema::from_json(schema),
+                    input_schema: InputSchema::from_json(serde_json::json!(t.input_schema)),
                 },
             }
         })
@@ -694,19 +487,11 @@ fn generate_thinking_prefix(req: &MessagesRequest) -> Option<String> {
                 t.budget_tokens
             ));
         } else if t.thinking_type == "adaptive" {
-            let raw_effort = req
+            let effort = req
                 .output_config
                 .as_ref()
                 .map(|c| c.effort.as_str())
                 .unwrap_or("high");
-            // 白名单归一化：仅接受 low/medium/high，非法值回退 high
-            let effort = match raw_effort {
-                "low" | "medium" | "high" => raw_effort,
-                _ => {
-                    tracing::warn!("未知的 thinking effort 值 '{}', 回退为 'high'", raw_effort);
-                    "high"
-                }
-            };
             return Some(format!(
                 "<thinking_mode>adaptive</thinking_mode><thinking_effort>{}</thinking_effort>",
                 effort
@@ -721,29 +506,12 @@ fn has_thinking_tags(content: &str) -> bool {
     content.contains("<thinking_mode>") || content.contains("<max_thinking_length>")
 }
 
-/// 检查请求的工具列表中是否包含 Write 或 Edit 工具
-fn has_write_or_edit_tool(req: &MessagesRequest) -> bool {
-    req.tools
-        .as_ref()
-        .is_some_and(|tools| tools.iter().any(|t| t.name == "Write" || t.name == "Edit"))
-}
-
 /// 构建历史消息
-/// `messages` 参数是经过 prefill 预处理后的消息切片（末尾必为 user）
-fn build_history(
-    req: &MessagesRequest,
-    messages: &[super::types::Message],
-    model_id: &str,
-    compression_config: &CompressionConfig,
-    total_image_count: usize,
-) -> Result<Vec<Message>, ConversionError> {
+fn build_history(req: &MessagesRequest, model_id: &str) -> Result<Vec<Message>, ConversionError> {
     let mut history = Vec::new();
 
     // 生成thinking前缀（如果需要）
     let thinking_prefix = generate_thinking_prefix(req);
-
-    // 仅在请求包含 Write/Edit 工具时注入分块写入策略
-    let should_inject_chunked_policy = has_write_or_edit_tool(req);
 
     // 1. 处理系统消息
     if let Some(ref system) = req.system {
@@ -754,12 +522,8 @@ fn build_history(
             .join("\n");
 
         if !system_content.is_empty() {
-            // 仅在存在 Write/Edit 工具时追加分块写入策略到系统消息
-            let system_content = if should_inject_chunked_policy {
-                format!("{}\n{}", system_content, SYSTEM_CHUNKED_POLICY)
-            } else {
-                system_content
-            };
+            // 追加分块写入策略到系统消息
+            let system_content = format!("{}\n{}", system_content, SYSTEM_CHUNKED_POLICY);
 
             // 注入thinking标签到系统消息最前面（如果需要且不存在）
             let final_content = if let Some(ref prefix) = thinking_prefix {
@@ -779,18 +543,9 @@ fn build_history(
             let assistant_msg = HistoryAssistantMessage::new("I will follow these instructions.");
             history.push(Message::Assistant(assistant_msg));
         }
-    } else if thinking_prefix.is_some() || should_inject_chunked_policy {
-        // 没有系统消息但需要注入 thinking 配置或分块写入策略
-        let mut parts = Vec::new();
-        if let Some(ref prefix) = thinking_prefix {
-            parts.push(prefix.clone());
-        }
-        if should_inject_chunked_policy {
-            parts.push(SYSTEM_CHUNKED_POLICY.to_string());
-        }
-        let content = parts.join("\n");
-
-        let user_msg = HistoryUserMessage::new(content, model_id);
+    } else if let Some(ref prefix) = thinking_prefix {
+        // 没有系统消息但有thinking配置，插入新的系统消息
+        let user_msg = HistoryUserMessage::new(prefix.clone(), model_id);
         history.push(Message::User(user_msg));
 
         let assistant_msg = HistoryAssistantMessage::new("I will follow these instructions.");
@@ -799,23 +554,33 @@ fn build_history(
 
     // 2. 处理常规消息历史
     // 最后一条消息作为 currentMessage，不加入历史
-    let history_end_index = messages.len().saturating_sub(1);
+    let history_end_index = req.messages.len().saturating_sub(1);
+
+    // 如果最后一条是 assistant，则包含在历史中
+    let last_is_assistant = req
+        .messages
+        .last()
+        .map(|m| m.role == "assistant")
+        .unwrap_or(false);
+
+    let history_end_index = if last_is_assistant {
+        req.messages.len()
+    } else {
+        history_end_index
+    };
 
     // 收集并配对消息
     let mut user_buffer: Vec<&super::types::Message> = Vec::new();
 
-    for msg in messages.iter().take(history_end_index) {
+    for i in 0..history_end_index {
+        let msg = &req.messages[i];
+
         if msg.role == "user" {
             user_buffer.push(msg);
         } else if msg.role == "assistant" {
             // 遇到 assistant，处理累积的 user 消息
             if !user_buffer.is_empty() {
-                let merged_user = merge_user_messages(
-                    &user_buffer,
-                    model_id,
-                    compression_config,
-                    total_image_count,
-                )?;
+                let merged_user = merge_user_messages(&user_buffer, model_id)?;
                 history.push(Message::User(merged_user));
                 user_buffer.clear();
 
@@ -828,12 +593,7 @@ fn build_history(
 
     // 处理结尾的孤立 user 消息
     if !user_buffer.is_empty() {
-        let merged_user = merge_user_messages(
-            &user_buffer,
-            model_id,
-            compression_config,
-            total_image_count,
-        )?;
+        let merged_user = merge_user_messages(&user_buffer, model_id)?;
         history.push(Message::User(merged_user));
 
         // 自动配对一个 "OK" 的 assistant 响应
@@ -848,16 +608,13 @@ fn build_history(
 fn merge_user_messages(
     messages: &[&super::types::Message],
     model_id: &str,
-    compression_config: &CompressionConfig,
-    total_image_count: usize,
 ) -> Result<HistoryUserMessage, ConversionError> {
     let mut content_parts = Vec::new();
     let mut all_images = Vec::new();
     let mut all_tool_results = Vec::new();
 
     for msg in messages {
-        let (text, images, tool_results) =
-            process_message_content(&msg.content, compression_config, total_image_count)?;
+        let (text, images, tool_results) = process_message_content(&msg.content)?;
         if !text.is_empty() {
             content_parts.push(text);
         }
@@ -865,10 +622,7 @@ fn merge_user_messages(
         all_tool_results.extend(tool_results);
     }
 
-    let content = non_empty_content_or_space(
-        content_parts.join("\n"),
-        !all_images.is_empty() || !all_tool_results.is_empty(),
-    );
+    let content = content_parts.join("\n");
     // 保留文本内容，即使有工具结果也不丢弃用户文本
     let mut user_msg = UserMessage::new(&content, model_id);
 
@@ -958,7 +712,6 @@ fn convert_assistant_message(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::config::CompressionConfig;
 
     #[test]
     fn test_map_model_sonnet() {
@@ -976,21 +729,11 @@ mod tests {
 
     #[test]
     fn test_map_model_opus() {
-        // 不含 4.5/4-5 的 opus → 默认映射到最新版 4.6
-        assert_eq!(
-            map_model("claude-opus-4-20250514").unwrap(),
-            "claude-opus-4.6"
+        assert!(
+            map_model("claude-opus-4-20250514")
+                .unwrap()
+                .contains("opus")
         );
-        assert_eq!(
-            map_model("claude-opus-4-20260206").unwrap(),
-            "claude-opus-4.6"
-        );
-        // 显式 4.5 → 保留 4.5
-        assert_eq!(
-            map_model("claude-opus-4-5-20250514").unwrap(),
-            "claude-opus-4.5"
-        );
-        assert_eq!(map_model("claude-opus-4.5").unwrap(), "claude-opus-4.5");
     }
 
     #[test]
@@ -1130,7 +873,7 @@ mod tests {
             metadata: None,
         };
 
-        let result = convert_request(&req, &CompressionConfig::default()).unwrap();
+        let result = convert_request(&req).unwrap();
 
         // 验证 tools 列表中包含了历史中使用的工具的占位符定义
         let tools = &result
@@ -1199,7 +942,7 @@ mod tests {
             }),
         };
 
-        let result = convert_request(&req, &CompressionConfig::default()).unwrap();
+        let result = convert_request(&req).unwrap();
         assert_eq!(
             result.conversation_state.conversation_id,
             "a0662283-7fd3-4399-a7eb-52b9a717ae88"
@@ -1227,7 +970,7 @@ mod tests {
             metadata: None,
         };
 
-        let result = convert_request(&req, &CompressionConfig::default()).unwrap();
+        let result = convert_request(&req).unwrap();
         // 验证生成的是有效的 UUID 格式
         assert_eq!(result.conversation_state.conversation_id.len(), 36);
         assert_eq!(
@@ -1507,242 +1250,6 @@ mod tests {
     }
 
     #[test]
-    fn test_convert_tools_filters_web_search() {
-        use super::super::types::Tool as AnthropicTool;
-        use std::collections::HashMap;
-
-        // 测试 web_search 工具被过滤
-        // Kiro API 当前不支持 web_search，需要自动过滤
-        let tools = vec![
-            // web_search 工具（应被过滤）
-            AnthropicTool {
-                tool_type: Some("web_search_20250305".to_string()),
-                name: "web_search".to_string(),
-                description: String::new(),
-                input_schema: HashMap::new(),
-                max_uses: Some(8),
-            },
-            // 普通工具（应保留）
-            AnthropicTool {
-                tool_type: None,
-                name: "read_file".to_string(),
-                description: "Read a file from disk".to_string(),
-                input_schema: {
-                    let mut schema = HashMap::new();
-                    schema.insert("type".to_string(), serde_json::json!("object"));
-                    schema
-                },
-                max_uses: None,
-            },
-        ];
-
-        let converted = convert_tools(&Some(tools), 4000);
-
-        // 应该只有 1 个工具（web_search 被过滤）
-        assert_eq!(converted.len(), 1, "web_search 应该被过滤");
-        assert_eq!(
-            converted[0].tool_specification.name, "read_file",
-            "只应保留 read_file 工具"
-        );
-    }
-
-    #[test]
-    fn test_convert_tools_filters_all_web_search_variants() {
-        use super::super::types::Tool as AnthropicTool;
-        use std::collections::HashMap;
-
-        // 测试所有 web_search 变体都被过滤
-        let tools = vec![
-            AnthropicTool {
-                tool_type: Some("web_search_20250305".to_string()),
-                name: "web_search".to_string(),
-                description: String::new(),
-                input_schema: HashMap::new(),
-                max_uses: Some(8),
-            },
-            AnthropicTool {
-                tool_type: Some("web_search_20260101".to_string()), // 假设的未来版本
-                name: "web_search".to_string(),
-                description: String::new(),
-                input_schema: HashMap::new(),
-                max_uses: Some(10),
-            },
-        ];
-
-        let converted = convert_tools(&Some(tools), 4000);
-
-        // 所有 web_search 工具都应被过滤
-        assert!(converted.is_empty(), "所有 web_search 变体都应被过滤");
-    }
-
-    #[test]
-    fn test_convert_tools_fills_empty_description_and_normalizes_schema() {
-        use super::super::types::{Message as AnthropicMessage, Tool as AnthropicTool};
-        use std::collections::HashMap;
-
-        let mut input_schema = HashMap::new();
-        input_schema.insert("type".to_string(), serde_json::json!("object"));
-
-        let req = MessagesRequest {
-            model: "claude-sonnet-4".to_string(),
-            max_tokens: 128,
-            messages: vec![AnthropicMessage {
-                role: "user".to_string(),
-                content: serde_json::json!("hi"),
-            }],
-            stream: false,
-            system: None,
-            tools: Some(vec![AnthropicTool {
-                tool_type: None,
-                name: "mcp__ida-pro-mcp__patch_address_assembles".to_string(),
-                description: "".to_string(), // 上游可能拒绝空 description
-                input_schema,                // 故意不带 $schema 等字段
-                max_uses: None,
-            }]),
-            tool_choice: None,
-            thinking: None,
-            output_config: None,
-            metadata: None,
-        };
-
-        let result = convert_request(&req, &CompressionConfig::default()).unwrap();
-        let tools = &result
-            .conversation_state
-            .current_message
-            .user_input_message
-            .user_input_message_context
-            .tools;
-
-        let tool = tools
-            .iter()
-            .find(|t| t.tool_specification.name == "mcp__ida-pro-mcp__patch_address_assembles")
-            .expect("转换后应包含该工具");
-
-        assert!(
-            !tool.tool_specification.description.trim().is_empty(),
-            "转换后的工具描述不应为空"
-        );
-        assert_eq!(
-            tool.tool_specification.input_schema.json["$schema"],
-            "http://json-schema.org/draft-07/schema#"
-        );
-        assert_eq!(tool.tool_specification.input_schema.json["type"], "object");
-    }
-
-    #[test]
-    fn test_current_message_content_is_non_empty_when_only_tool_result() {
-        use super::super::types::Message as AnthropicMessage;
-
-        // 构造典型 tool_use -> tool_result 链路，最后一条为 tool_result user 消息
-        let req = MessagesRequest {
-            model: "claude-sonnet-4".to_string(),
-            max_tokens: 128,
-            messages: vec![
-                AnthropicMessage {
-                    role: "user".to_string(),
-                    content: serde_json::json!("do it"),
-                },
-                AnthropicMessage {
-                    role: "assistant".to_string(),
-                    content: serde_json::json!([
-                        {"type": "tool_use", "id": "tool-1", "name": "read", "input": {"path": "/tmp/a"}}
-                    ]),
-                },
-                AnthropicMessage {
-                    role: "user".to_string(),
-                    content: serde_json::json!([
-                        {"type": "tool_result", "tool_use_id": "tool-1", "content": "ok"}
-                    ]),
-                },
-            ],
-            stream: false,
-            system: None,
-            tools: None,
-            tool_choice: None,
-            thinking: None,
-            output_config: None,
-            metadata: None,
-        };
-
-        let result = convert_request(&req, &CompressionConfig::default()).unwrap();
-        let content = &result
-            .conversation_state
-            .current_message
-            .user_input_message
-            .content;
-
-        assert!(
-            !content.is_empty(),
-            "仅 tool_result 的 user 消息应使用占位符避免空 content"
-        );
-        assert_eq!(content, " ");
-    }
-
-    #[test]
-    fn test_history_user_message_content_is_non_empty_when_only_tool_result() {
-        use super::super::types::Message as AnthropicMessage;
-
-        // 让 tool_result 进入 history：tool_result 后紧跟 assistant，然后用户继续提问
-        let req = MessagesRequest {
-            model: "claude-sonnet-4".to_string(),
-            max_tokens: 128,
-            messages: vec![
-                AnthropicMessage {
-                    role: "user".to_string(),
-                    content: serde_json::json!("do it"),
-                },
-                AnthropicMessage {
-                    role: "assistant".to_string(),
-                    content: serde_json::json!([
-                        {"type": "tool_use", "id": "tool-1", "name": "read", "input": {"path": "/tmp/a"}}
-                    ]),
-                },
-                AnthropicMessage {
-                    role: "user".to_string(),
-                    content: serde_json::json!([
-                        {"type": "tool_result", "tool_use_id": "tool-1", "content": "ok"}
-                    ]),
-                },
-                AnthropicMessage {
-                    role: "assistant".to_string(),
-                    content: serde_json::json!("done"),
-                },
-                AnthropicMessage {
-                    role: "user".to_string(),
-                    content: serde_json::json!("next"),
-                },
-            ],
-            stream: false,
-            system: None,
-            tools: None,
-            tool_choice: None,
-            thinking: None,
-            output_config: None,
-            metadata: None,
-        };
-
-        let result = convert_request(&req, &CompressionConfig::default()).unwrap();
-
-        let mut found = false;
-        for msg in &result.conversation_state.history {
-            let Message::User(user_msg) = msg else {
-                continue;
-            };
-            let ctx = &user_msg.user_input_message.user_input_message_context;
-            if ctx.tool_results.is_empty() {
-                continue;
-            }
-            found = true;
-            assert!(
-                !user_msg.user_input_message.content.is_empty(),
-                "history 中的 tool_result user 消息也需要占位符"
-            );
-            assert_eq!(user_msg.user_input_message.content, " ");
-        }
-        assert!(found, "测试数据应在 history 中包含 tool_results");
-    }
-
-    #[test]
     fn test_remove_orphaned_tool_uses() {
         use crate::kiro::model::requests::tool::ToolUseEntry;
 
@@ -1813,324 +1320,5 @@ mod tests {
         } else {
             panic!("应该是 Assistant 消息");
         }
-    }
-
-    #[test]
-    fn test_normalize_json_schema_coerces_field_types() {
-        let input = serde_json::json!({
-            "$schema": null,
-            "type": null,
-            "properties": null,
-            "required": null,
-            "additionalProperties": null,
-        });
-
-        let normalized = normalize_json_schema(input);
-
-        assert_eq!(
-            normalized.get("$schema").and_then(|v| v.as_str()),
-            Some("http://json-schema.org/draft-07/schema#")
-        );
-        assert_eq!(
-            normalized.get("type").and_then(|v| v.as_str()),
-            Some("object")
-        );
-        assert!(normalized.get("properties").is_some_and(|v| v.is_object()));
-        assert!(normalized.get("required").is_some_and(|v| v.is_array()));
-        assert!(
-            normalized
-                .get("additionalProperties")
-                .is_some_and(|v| v.is_boolean())
-        );
-    }
-
-    #[test]
-    fn test_normalize_json_schema_filters_required_non_strings() {
-        let input = serde_json::json!({
-            "type": "object",
-            "properties": {},
-            "required": ["a", 1, null, {"x": 1}],
-        });
-
-        let normalized = normalize_json_schema(input);
-        let required = normalized
-            .get("required")
-            .and_then(|v| v.as_array())
-            .expect("required 应该是数组");
-
-        assert_eq!(required, &vec![serde_json::Value::String("a".to_string())]);
-    }
-
-    #[test]
-    fn test_chunked_policy_injected_only_with_write_edit_tools() {
-        use super::super::types::{
-            Message as AnthropicMessage, SystemMessage, Tool as AnthropicTool,
-        };
-        use std::collections::HashMap;
-
-        let system = vec![SystemMessage {
-            text: "You are a helpful assistant.".to_string(),
-        }];
-
-        // 无工具 → 不注入 chunked policy
-        let req_no_tools = MessagesRequest {
-            model: "claude-sonnet-4".to_string(),
-            max_tokens: 1024,
-            messages: vec![AnthropicMessage {
-                role: "user".to_string(),
-                content: serde_json::json!("hello"),
-            }],
-            stream: false,
-            system: Some(system.clone()),
-            tools: None,
-            tool_choice: None,
-            thinking: None,
-            output_config: None,
-            metadata: None,
-        };
-
-        let result = convert_request(&req_no_tools, &CompressionConfig::default()).unwrap();
-        let first_user = &result.conversation_state.history[0];
-        match first_user {
-            Message::User(u) => {
-                assert!(
-                    !u.user_input_message.content.contains("chunked operations"),
-                    "无工具时不应注入 chunked policy"
-                );
-            }
-            _ => panic!("history[0] 应该是 User 消息"),
-        }
-
-        // 有 Write 工具 → 注入 chunked policy
-        let req_with_write = MessagesRequest {
-            model: "claude-sonnet-4".to_string(),
-            max_tokens: 1024,
-            messages: vec![AnthropicMessage {
-                role: "user".to_string(),
-                content: serde_json::json!("hello"),
-            }],
-            stream: false,
-            system: Some(system.clone()),
-            tools: Some(vec![AnthropicTool {
-                tool_type: None,
-                name: "Write".to_string(),
-                description: "Write a file".to_string(),
-                input_schema: HashMap::new(),
-                max_uses: None,
-            }]),
-            tool_choice: None,
-            thinking: None,
-            output_config: None,
-            metadata: None,
-        };
-
-        let result = convert_request(&req_with_write, &CompressionConfig::default()).unwrap();
-        let first_user = &result.conversation_state.history[0];
-        match first_user {
-            Message::User(u) => {
-                assert!(
-                    u.user_input_message.content.contains("chunked operations"),
-                    "有 Write 工具时应注入 chunked policy"
-                );
-            }
-            _ => panic!("history[0] 应该是 User 消息"),
-        }
-
-        // system: None + 有 Edit 工具 → 也应注入 chunked policy
-        let req_no_system_with_edit = MessagesRequest {
-            model: "claude-sonnet-4".to_string(),
-            max_tokens: 1024,
-            messages: vec![AnthropicMessage {
-                role: "user".to_string(),
-                content: serde_json::json!("hello"),
-            }],
-            stream: false,
-            system: None,
-            tools: Some(vec![AnthropicTool {
-                tool_type: None,
-                name: "Edit".to_string(),
-                description: "Edit a file".to_string(),
-                input_schema: HashMap::new(),
-                max_uses: None,
-            }]),
-            tool_choice: None,
-            thinking: None,
-            output_config: None,
-            metadata: None,
-        };
-
-        let result =
-            convert_request(&req_no_system_with_edit, &CompressionConfig::default()).unwrap();
-        let first_user = &result.conversation_state.history[0];
-        match first_user {
-            Message::User(u) => {
-                assert!(
-                    u.user_input_message.content.contains("chunked operations"),
-                    "system: None + 有 Edit 工具时也应注入 chunked policy"
-                );
-            }
-            _ => panic!("history[0] 应该是 User 消息"),
-        }
-    }
-
-    #[test]
-    fn test_effort_whitelist_fallback() {
-        use super::super::types::{Message as AnthropicMessage, OutputConfig, Thinking};
-
-        // 合法值 "low"
-        let req = MessagesRequest {
-            model: "claude-sonnet-4".to_string(),
-            max_tokens: 1024,
-            messages: vec![AnthropicMessage {
-                role: "user".to_string(),
-                content: serde_json::json!("hello"),
-            }],
-            stream: false,
-            system: None,
-            tools: None,
-            tool_choice: None,
-            thinking: Some(Thinking {
-                thinking_type: "adaptive".to_string(),
-                budget_tokens: 0,
-            }),
-            output_config: Some(OutputConfig {
-                effort: "low".to_string(),
-            }),
-            metadata: None,
-        };
-
-        let prefix = generate_thinking_prefix(&req).unwrap();
-        assert!(prefix.contains("<thinking_effort>low</thinking_effort>"));
-
-        // 非法值 → 回退 "high"
-        let req_invalid = MessagesRequest {
-            model: "claude-sonnet-4".to_string(),
-            max_tokens: 1024,
-            messages: vec![AnthropicMessage {
-                role: "user".to_string(),
-                content: serde_json::json!("hello"),
-            }],
-            stream: false,
-            system: None,
-            tools: None,
-            tool_choice: None,
-            thinking: Some(Thinking {
-                thinking_type: "adaptive".to_string(),
-                budget_tokens: 0,
-            }),
-            output_config: Some(OutputConfig {
-                effort: "ultra".to_string(),
-            }),
-            metadata: None,
-        };
-
-        let prefix = generate_thinking_prefix(&req_invalid).unwrap();
-        assert!(
-            prefix.contains("<thinking_effort>high</thinking_effort>"),
-            "非法 effort 值应回退为 high，实际: {}",
-            prefix
-        );
-    }
-
-    #[test]
-    fn test_collect_history_tool_names_deduplicates_case_variants() {
-        use crate::kiro::model::requests::tool::ToolUseEntry;
-
-        // 历史中同时出现 "read" 和 "Read"（大小写变体），应只保留首次出现的形式
-        let mut msg1 = AssistantMessage::new("reading...");
-        msg1 = msg1.with_tool_uses(vec![
-            ToolUseEntry::new("t-1", "read").with_input(serde_json::json!({"path": "/a.txt"})),
-        ]);
-
-        let mut msg2 = AssistantMessage::new("reading again...");
-        msg2 = msg2.with_tool_uses(vec![
-            ToolUseEntry::new("t-2", "Read").with_input(serde_json::json!({"path": "/b.txt"})),
-        ]);
-
-        let history = vec![
-            Message::User(HistoryUserMessage::new("go", "claude-sonnet-4.5")),
-            Message::Assistant(HistoryAssistantMessage {
-                assistant_response_message: msg1,
-            }),
-            Message::User(HistoryUserMessage::new("ok", "claude-sonnet-4.5")),
-            Message::Assistant(HistoryAssistantMessage {
-                assistant_response_message: msg2,
-            }),
-        ];
-
-        let tool_names = collect_history_tool_names(&history);
-        // 只应有 1 个条目（首次出现的 "read"）
-        assert_eq!(
-            tool_names.len(),
-            1,
-            "大小写变体应被去重，实际: {:?}",
-            tool_names
-        );
-        assert_eq!(tool_names[0], "read");
-    }
-
-    #[test]
-    fn test_convert_request_handles_assistant_prefill() {
-        // 末尾 assistant 消息（prefill）应被静默丢弃，使用最后一条 user 消息作为 current_message
-        use super::super::types::Message as AnthropicMessage;
-
-        let req = MessagesRequest {
-            model: "claude-sonnet-4".to_string(),
-            max_tokens: 1024,
-            messages: vec![
-                AnthropicMessage {
-                    role: "user".to_string(),
-                    content: serde_json::json!("Hello"),
-                },
-                AnthropicMessage {
-                    role: "assistant".to_string(),
-                    content: serde_json::json!("Hi there"),
-                },
-            ],
-            stream: false,
-            system: None,
-            tools: None,
-            tool_choice: None,
-            thinking: None,
-            output_config: None,
-            metadata: None,
-        };
-
-        let result = convert_request(&req, &CompressionConfig::default());
-        assert!(result.is_ok(), "prefill 场景不应报错: {:?}", result.err());
-        let state = result.unwrap().conversation_state;
-        assert_eq!(
-            state.current_message.user_input_message.content, "Hello",
-            "current_message 应为最后一条 user 消息的内容"
-        );
-    }
-
-    #[test]
-    fn test_convert_request_prefill_no_user_message() {
-        // 只有 assistant 消息、没有 user 消息时应返回 EmptyMessages 错误
-        use super::super::types::Message as AnthropicMessage;
-
-        let req = MessagesRequest {
-            model: "claude-sonnet-4".to_string(),
-            max_tokens: 1024,
-            messages: vec![AnthropicMessage {
-                role: "assistant".to_string(),
-                content: serde_json::json!("Hi there"),
-            }],
-            stream: false,
-            system: None,
-            tools: None,
-            tool_choice: None,
-            thinking: None,
-            output_config: None,
-            metadata: None,
-        };
-
-        let err = convert_request(&req, &CompressionConfig::default()).unwrap_err();
-        assert!(
-            matches!(err, ConversionError::EmptyMessages),
-            "只有 assistant 消息时应返回 EmptyMessages，实际: {:?}",
-            err
-        );
     }
 }
