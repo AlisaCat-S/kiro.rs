@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [v1.0.8] - 2026-02-12
 
 ### Added
 - **批量导入 token.json** (`src/admin/service.rs`, `src/admin/types.rs`)
