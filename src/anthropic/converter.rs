@@ -2213,10 +2213,7 @@ mod tests {
 
         // 验证 thinking 和 text 内容被合并
         let content = &result.assistant_response_message.content;
-        assert!(
-            content.contains("<thinking>"),
-            "应包含 thinking 标签"
-        );
+        assert!(content.contains("<thinking>"), "应包含 thinking 标签");
         assert!(
             content.contains("Let me read that file"),
             "应包含第二条消息的 text 内容"
@@ -2302,10 +2299,7 @@ mod tests {
                 }
             }
         }
-        assert!(
-            found_tool_use,
-            "合并后的 assistant 消息应包含 tool_use"
-        );
+        assert!(found_tool_use, "合并后的 assistant 消息应包含 tool_use");
 
         // 验证 current_message 包含 tool_result
         let tool_results = &state

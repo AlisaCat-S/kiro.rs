@@ -9,25 +9,6 @@ use uuid::Uuid;
 
 use crate::kiro::model::events::Event;
 
-/// 找到小于等于目标位置的最近有效UTF-8字符边界
-///
-/// UTF-8字符可能占用1-4个字节，直接按字节位置切片可能会切在多字节字符中间导致panic。
-/// 这个函数从目标位置向前搜索，找到最近的有效字符边界。
-fn find_char_boundary(s: &str, target: usize) -> usize {
-    if target >= s.len() {
-        return s.len();
-    }
-    if target == 0 {
-        return 0;
-    }
-    // 从目标位置向前搜索有效的字符边界
-    let mut pos = target;
-    while pos > 0 && !s.is_char_boundary(pos) {
-        pos -= 1;
-    }
-    pos
-}
-
 /// 需要跳过的包裹字符
 ///
 /// 当 thinking 标签被这些字符包裹时，认为是在引用标签而非真正的标签：
@@ -274,9 +255,35 @@ impl SseStateManager {
         self.has_tool_use = has;
     }
 
-    /// 设置 stop_reason
+    /// stop_reason 优先级（索引越小优先级越高）
+    const STOP_REASON_PRIORITY: &'static [&'static str] = &[
+        "model_context_window_exceeded",
+        "max_tokens",
+        "tool_use",
+        "end_turn",
+    ];
+
+    /// 获取 stop_reason 的优先级（越小越高，未知原因返回 usize::MAX）
+    fn stop_reason_priority(reason: &str) -> usize {
+        Self::STOP_REASON_PRIORITY
+            .iter()
+            .position(|&r| r == reason)
+            .unwrap_or(usize::MAX)
+    }
+
+    /// 设置 stop_reason（高优先级原因可覆盖低优先级原因）
+    ///
+    /// 优先级从高到低：model_context_window_exceeded > max_tokens > tool_use > end_turn
     pub fn set_stop_reason(&mut self, reason: impl Into<String>) {
-        self.stop_reason = Some(reason.into());
+        let reason = reason.into();
+        let new_priority = Self::stop_reason_priority(&reason);
+        let should_set = match &self.stop_reason {
+            None => true,
+            Some(current) => new_priority < Self::stop_reason_priority(current),
+        };
+        if should_set {
+            self.stop_reason = Some(reason);
+        }
     }
 
     /// 检查是否存在非 thinking 类型的内容块（如 text 或 tool_use）
@@ -337,7 +344,7 @@ impl SseStateManager {
         // 检查块是否已存在
         if let Some(block) = self.active_blocks.get_mut(&index) {
             if block.started {
-                tracing::debug!("块 {} 已启动，跳过重复的 content_block_start", index);
+                tracing::trace!("块 {} 已启动，跳过重复的 content_block_start", index);
                 return events;
             }
             block.started = true;
@@ -588,7 +595,7 @@ impl StreamContext {
                         .set_stop_reason("model_context_window_exceeded");
                 }
                 tracing::debug!(
-                    "收到 contextUsageEvent: {}%, 计算 input_tokens: {}",
+                    "收到 contextUsageEvent: {:.4}%, 计算 input_tokens: {}",
                     context_usage.context_usage_percentage,
                     actual_input_tokens
                 );
@@ -683,7 +690,7 @@ impl StreamContext {
                         .thinking_buffer
                         .len()
                         .saturating_sub("<thinking>".len());
-                    let safe_len = find_char_boundary(&self.thinking_buffer, target_len);
+                    let safe_len = self.thinking_buffer.floor_char_boundary(target_len);
                     if safe_len > 0 {
                         let safe_content = self.thinking_buffer[..safe_len].to_string();
                         // 如果 thinking 尚未提取，且安全内容只是空白字符，
@@ -753,7 +760,7 @@ impl StreamContext {
                         .thinking_buffer
                         .len()
                         .saturating_sub("</thinking>\n\n".len());
-                    let safe_len = find_char_boundary(&self.thinking_buffer, target_len);
+                    let safe_len = self.thinking_buffer.floor_char_boundary(target_len);
                     if safe_len > 0 {
                         let safe_content = self.thinking_buffer[..safe_len].to_string();
                         if let Some(thinking_index) = self.thinking_block_index

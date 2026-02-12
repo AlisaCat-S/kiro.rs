@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- **修复 upstream 合并丢失的功能** (`src/anthropic/stream.rs`)
+  - 恢复 `stop_reason` 优先级逻辑：高优先级原因可覆盖低优先级（model_context_window_exceeded > max_tokens > tool_use > end_turn）
+  - 注释掉重复的 `content_block_start` 日志，避免日志噪音
+  - 修复 `contextUsageEvent` 日志格式（保留4位小数）
+  - 移除冗余的 `find_char_boundary` 函数，改用标准库 `str::floor_char_boundary()`
+
 ## [v1.0.8] - 2026-02-12
 
 ### Added
