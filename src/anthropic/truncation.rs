@@ -243,7 +243,7 @@ fn extract_parsed_field_names(
         let display = match val {
             serde_json::Value::String(s) => {
                 if s.len() > 50 {
-                    format!("{}...", &s[..50])
+                    format!("{}...", s.chars().take(50).collect::<String>())
                 } else {
                     s.clone()
                 }
