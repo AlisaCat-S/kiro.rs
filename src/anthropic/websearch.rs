@@ -44,8 +44,6 @@ pub struct McpArguments {
 #[derive(Debug, Deserialize)]
 pub struct McpResponse {
     pub error: Option<McpError>,
-    pub id: String,
-    pub jsonrpc: String,
     pub result: Option<McpResult>,
 }
 
@@ -60,8 +58,6 @@ pub struct McpError {
 #[derive(Debug, Deserialize)]
 pub struct McpResult {
     pub content: Vec<McpContent>,
-    #[serde(rename = "isError")]
-    pub is_error: bool,
 }
 
 /// MCP 内容
@@ -76,10 +72,6 @@ pub struct McpContent {
 #[derive(Debug, Deserialize)]
 pub struct WebSearchResults {
     pub results: Vec<WebSearchResult>,
-    #[serde(rename = "totalResults")]
-    pub total_results: Option<i32>,
-    pub query: Option<String>,
-    pub error: Option<String>,
 }
 
 /// 单个搜索结果
@@ -88,14 +80,6 @@ pub struct WebSearchResult {
     pub title: String,
     pub url: String,
     pub snippet: Option<String>,
-    #[serde(rename = "publishedDate")]
-    pub published_date: Option<i64>,
-    pub id: Option<String>,
-    pub domain: Option<String>,
-    #[serde(rename = "maxVerbatimWordLimit")]
-    pub max_verbatim_word_limit: Option<i32>,
-    #[serde(rename = "publicDomain")]
-    pub public_domain: Option<bool>,
 }
 
 /// 检查请求是否为纯 WebSearch 请求
@@ -684,14 +668,11 @@ mod tests {
     fn test_parse_search_results() {
         let response = McpResponse {
             error: None,
-            id: "test_id".to_string(),
-            jsonrpc: "2.0".to_string(),
             result: Some(McpResult {
                 content: vec![McpContent {
                     content_type: "text".to_string(),
                     text: r#"{"results":[{"title":"Test","url":"https://example.com","snippet":"Test snippet"}],"totalResults":1}"#.to_string(),
                 }],
-                is_error: false,
             }),
         };
 
@@ -709,15 +690,7 @@ mod tests {
                 title: "Test Result".to_string(),
                 url: "https://example.com".to_string(),
                 snippet: Some("This is a test snippet".to_string()),
-                published_date: None,
-                id: None,
-                domain: None,
-                max_verbatim_word_limit: None,
-                public_domain: None,
             }],
-            total_results: Some(1),
-            query: Some("test".to_string()),
-            error: None,
         };
 
         let summary = generate_search_summary("test", &Some(results));

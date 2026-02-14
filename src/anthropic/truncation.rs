@@ -25,9 +25,6 @@ pub enum TruncationType {
 pub struct TruncationInfo {
     pub is_truncated: bool,
     pub truncation_type: TruncationType,
-    pub tool_name: String,
-    pub tool_use_id: String,
-    pub raw_input: String,
     pub parsed_fields: HashMap<String, String>,
     pub error_message: String,
 }
@@ -70,9 +67,6 @@ pub fn detect_truncation(
     let mut info = TruncationInfo {
         is_truncated: false,
         truncation_type: TruncationType::None,
-        tool_name: tool_name.to_string(),
-        tool_use_id: tool_use_id.to_string(),
-        raw_input: raw_input.to_string(),
         parsed_fields: HashMap::new(),
         error_message: String::new(),
     };
@@ -283,72 +277,3 @@ fn detect_content_truncation(
     None
 }
 
-/// 构建软失败工具结果消息
-///
-/// 当检测到截断时，返回此消息作为 tool_result 引导 Claude 重试
-pub fn build_soft_failure_result(info: &TruncationInfo) -> String {
-    let max_line_hint = match info.truncation_type {
-        TruncationType::EmptyInput => 200,
-        TruncationType::InvalidJson => 250,
-        TruncationType::MissingFields => 300,
-        TruncationType::IncompleteString => 350,
-        TruncationType::None => 300,
-    };
-
-    let reason = match info.truncation_type {
-        TruncationType::EmptyInput => {
-            "Your tool call was too large and the input was completely lost during transmission."
-        }
-        TruncationType::InvalidJson => {
-            "Your tool call was truncated mid-transmission, resulting in incomplete JSON."
-        }
-        TruncationType::MissingFields => {
-            "Your tool call was partially received but critical fields were cut off."
-        }
-        TruncationType::IncompleteString => {
-            "Your tool call content was truncated - the full content did not arrive."
-        }
-        TruncationType::None => {
-            "Your tool call was truncated by the API due to output size limits."
-        }
-    };
-
-    let mut result = format!(
-        "TOOL_CALL_INCOMPLETE\nstatus: incomplete\nreason: {}\n",
-        reason
-    );
-
-    if !info.parsed_fields.is_empty() {
-        let fields: Vec<String> = info
-            .parsed_fields
-            .iter()
-            .map(|(k, v)| {
-                let display_v: String = if v.len() > 30 {
-                    v.chars().take(30).collect::<String>() + "..."
-                } else {
-                    v.clone()
-                };
-                format!("{}={}", k, display_v)
-            })
-            .collect();
-        result.push_str(&format!(
-            "context: Received partial data: {}\n",
-            fields.join(", ")
-        ));
-    }
-
-    result.push_str(&format!(
-        "\nCONCLUSION: Split your output into smaller chunks and retry.\n\
-         \n\
-         REQUIRED APPROACH:\n\
-         1. For file writes: Write in chunks of ~{} lines maximum\n\
-         2. For new files: First create with initial chunk, then append remaining sections\n\
-         3. For edits: Make surgical, targeted changes - avoid rewriting entire files\n\
-         \n\
-         DO NOT attempt to write the full content again in a single call.\n\
-         The API has a hard output limit that cannot be bypassed.\n",
-        max_line_hint
-    ));
-
-    result
-}

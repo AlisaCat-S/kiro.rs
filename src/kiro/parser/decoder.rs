@@ -127,6 +127,7 @@ impl EventStreamDecoder {
     }
 
     /// 创建具有自定义配置的解码器
+    #[allow(dead_code)]
     pub fn with_config(capacity: usize, max_errors: usize, max_buffer_size: usize) -> Self {
         Self {
             buffer: BytesMut::with_capacity(capacity),
@@ -308,6 +309,7 @@ impl EventStreamDecoder {
     /// 重置解码器到初始状态
     ///
     /// 清空缓冲区和所有计数器，恢复到 Ready 状态
+    #[allow(dead_code)]
     pub fn reset(&mut self) {
         self.buffer.clear();
         self.state = DecoderState::Ready;
@@ -317,41 +319,49 @@ impl EventStreamDecoder {
     }
 
     /// 获取当前状态
+    #[allow(dead_code)]
     pub fn state(&self) -> DecoderState {
         self.state
     }
 
     /// 检查是否处于 Ready 状态
+    #[allow(dead_code)]
     pub fn is_ready(&self) -> bool {
         self.state == DecoderState::Ready
     }
 
     /// 检查是否处于 Stopped 状态
+    #[allow(dead_code)]
     pub fn is_stopped(&self) -> bool {
         self.state == DecoderState::Stopped
     }
 
     /// 检查是否处于 Recovering 状态
+    #[allow(dead_code)]
     pub fn is_recovering(&self) -> bool {
         self.state == DecoderState::Recovering
     }
 
     /// 获取已解码的帧数量
+    #[allow(dead_code)]
     pub fn frames_decoded(&self) -> usize {
         self.frames_decoded
     }
 
     /// 获取当前连续错误计数
+    #[allow(dead_code)]
     pub fn error_count(&self) -> usize {
         self.error_count
     }
 
     /// 获取跳过的字节数
+    #[allow(dead_code)]
     pub fn bytes_skipped(&self) -> usize {
         self.bytes_skipped
     }
 
     /// 获取缓冲区中待处理的字节数
+    #[allow(dead_code)]
     pub fn buffer_len(&self) -> usize {
         self.buffer.len()
     }
@@ -360,6 +370,7 @@ impl EventStreamDecoder {
     ///
     /// 重置错误计数并转移到 Ready 状态
     /// 注意：缓冲区内容保留，可能仍包含损坏数据
+    #[allow(dead_code)]
     pub fn try_resume(&mut self) {
         if self.state == DecoderState::Stopped {
             self.error_count = 0;

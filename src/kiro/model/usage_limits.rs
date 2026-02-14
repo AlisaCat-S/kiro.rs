@@ -36,6 +36,7 @@ pub struct SubscriptionInfo {
 pub struct UsageBreakdown {
     /// 当前使用量
     #[serde(default)]
+    #[allow(dead_code)]
     pub current_usage: i64,
 
     /// 当前使用量（精确值）
@@ -52,10 +53,12 @@ pub struct UsageBreakdown {
 
     /// 下次重置日期 (Unix 时间戳)
     #[serde(default)]
+    #[allow(dead_code)]
     pub next_date_reset: Option<f64>,
 
     /// 使用限额
     #[serde(default)]
+    #[allow(dead_code)]
     pub usage_limit: i64,
 
     /// 使用限额（精确值）
@@ -96,6 +99,7 @@ impl Bonus {
 pub struct FreeTrialInfo {
     /// 当前使用量
     #[serde(default)]
+    #[allow(dead_code)]
     pub current_usage: i64,
 
     /// 当前使用量（精确值）
@@ -104,6 +108,7 @@ pub struct FreeTrialInfo {
 
     /// 免费试用过期时间 (Unix 时间戳)
     #[serde(default)]
+    #[allow(dead_code)]
     pub free_trial_expiry: Option<f64>,
 
     /// 免费试用状态 (ACTIVE / EXPIRED)
@@ -112,6 +117,7 @@ pub struct FreeTrialInfo {
 
     /// 使用限额
     #[serde(default)]
+    #[allow(dead_code)]
     pub usage_limit: i64,
 
     /// 使用限额（精确值）
