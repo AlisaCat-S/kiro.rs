@@ -456,7 +456,7 @@ RUST_LOG=debug ./target/release/kiro-rs
 
 1. **凭证安全**: 请妥善保管 `credentials.json` 文件，不要提交到版本控制
 2. **Token 刷新**: 服务会自动刷新过期的 Token，无需手动干预
-3. **WebSearch 工具**: 当 `tools` 列表仅包含一个 `web_search` 工具时，会走内置 WebSearch 转换逻辑
+3. **WebSearch 工具**: 只要 `tools` 中包含 `web_search`（按 name 或 type 判断），就走内置 WebSearch 处理逻辑
 
 ## 项目结构
 

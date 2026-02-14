@@ -83,5 +83,5 @@ kiro-rs/
 1. **构建顺序**: 必须先构建前端 `admin-ui`，再编译 Rust 后端（静态文件通过 `rust-embed` 嵌入）
 2. **凭据格式**: 支持单凭据（向后兼容）和多凭据（数组格式，支持 priority 字段）
 3. **重试策略**: 单凭据最多重试 2 次，单请求最多重试 5 次
-4. **不支持的工具**: `web_search` 和 `websearch` 会被自动过滤
+4. **WebSearch 工具**: 只要请求 `tools` 中包含 `web_search`（按 name 或 type 判断），就走本地 WebSearch 处理（不透传到 Kiro 上游）
 5. **安全**: 使用 `subtle` 库进行常量时间比较防止时序攻击
