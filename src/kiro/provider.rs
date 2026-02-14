@@ -13,6 +13,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 use uuid::Uuid;
 
+#[cfg(not(feature = "sensitive-logs"))]
 use crate::common::utf8::floor_char_boundary;
 use crate::http_client::{ProxyConfig, build_client};
 use crate::kiro::machine_id;
@@ -407,7 +408,7 @@ impl KiroProvider {
                         response_body = %body,
                         request_url = %url,
                         request_headers = %Self::format_headers_for_log(&headers_for_log),
-                        request_body = %request_body,
+                        request_body = %Self::truncate_body_for_log(request_body, 1200),
                         "MCP 400 Bad Request - 请求格式错误"
                     );
                     #[cfg(not(feature = "sensitive-logs"))]
@@ -657,7 +658,7 @@ impl KiroProvider {
                         response_body = %body,
                         request_url = %url,
                         request_headers = %Self::format_headers_for_log(&headers_for_log),
-                        request_body = %final_body_for_log,
+                        request_body = %Self::truncate_body_for_log(&final_body_for_log, 1200),
                         "400 Bad Request - 请求格式错误"
                     );
                     #[cfg(not(feature = "sensitive-logs"))]
@@ -1054,6 +1055,38 @@ impl KiroProvider {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// 截断请求体用于日志输出，保留头尾各 `keep` 个字符
+    ///
+    /// 避免在 sensitive-logs 模式下输出包含大量 base64 图片数据的完整请求体。
+    #[cfg(feature = "sensitive-logs")]
+    fn truncate_body_for_log(s: &str, keep: usize) -> std::borrow::Cow<'_, str> {
+        let char_count = s.chars().count();
+        let min_omit = 30;
+        if char_count <= keep * 2 + min_omit {
+            return std::borrow::Cow::Borrowed(s);
+        }
+
+        let head_end = s
+            .char_indices()
+            .nth(keep)
+            .map(|(i, _)| i)
+            .unwrap_or(s.len());
+
+        let tail_start = s
+            .char_indices()
+            .nth_back(keep - 1)
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+
+        let omitted = s.len() - head_end - (s.len() - tail_start);
+        std::borrow::Cow::Owned(format!(
+            "{}...({} bytes omitted)...{}",
+            &s[..head_end],
+            omitted,
+            &s[tail_start..]
+        ))
     }
 }
 

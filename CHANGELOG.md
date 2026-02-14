@@ -1,5 +1,13 @@
 # Changelog
 
+## [v1.0.14] - 2026-02-15
+
+### Fixed
+- **sensitive-logs 模式下请求体日志截断** (`src/kiro/provider.rs`, `src/anthropic/handlers.rs`)
+  - 400 错误日志中的 `request_body` 字段改用 `truncate_body_for_log()` 截断（保留头尾各 1200 字符），避免输出包含大量 base64 图片数据的完整请求体
+  - 工具输入 JSON 解析失败日志中的 `request_body` 字段改用 `truncate_middle()` 截断
+  - 新增 `KiroProvider::truncate_body_for_log()` 函数，正确处理 UTF-8 多字节字符边界
+
 ## [v1.0.13] - 2026-02-14
 
 ### Fixed

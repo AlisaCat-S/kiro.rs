@@ -762,7 +762,7 @@ async fn handle_non_stream_request(
                                         tracing::warn!(
                                             tool_use_id = %tool_use.tool_use_id,
                                             buffer = %buffer,
-                                            request_body = %request_body,
+                                            request_body = %truncate_middle(request_body, 1200),
                                             "工具输入 JSON 解析失败: {e}"
                                         );
                                         #[cfg(not(feature = "sensitive-logs"))]
