@@ -220,6 +220,9 @@ pub async fn post_messages(
     // 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
     override_thinking_from_model_name(&mut payload);
 
+    // 打印 Think 状态标识
+    tracing::info!("{} model={}", format_think_tag(&payload.thinking), payload.model);
+
     // 检查是否为 WebSearch 请求
     if websearch::has_web_search_tool(&payload) {
         tracing::info!("检测到 WebSearch 工具，路由到 WebSearch 处理");
@@ -641,6 +644,20 @@ async fn handle_non_stream_request(
     (StatusCode::OK, Json(response_body)).into_response()
 }
 
+/// 格式化 Think 状态标识
+fn format_think_tag(thinking: &Option<Thinking>) -> String {
+    match thinking {
+        Some(t) if t.is_enabled() => {
+            if t.thinking_type == "adaptive" {
+                "[Think adaptive]".to_string()
+            } else {
+                format!("[Think {}]", t.budget_tokens)
+            }
+        }
+        _ => "[Think Off]".to_string(),
+    }
+}
+
 /// 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
 ///
 /// - Opus 4.6：覆写为 adaptive 类型
@@ -763,6 +780,9 @@ pub async fn post_messages_cc(
 
     // 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
     override_thinking_from_model_name(&mut payload);
+
+    // 打印 Think 状态标识
+    tracing::info!("{} model={}", format_think_tag(&payload.thinking), payload.model);
 
     // 检查是否为 WebSearch 请求
     if websearch::has_web_search_tool(&payload) {
