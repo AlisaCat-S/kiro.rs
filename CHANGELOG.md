@@ -1,5 +1,14 @@
 # Changelog
 
+## [v1.0.13] - 2026-02-14
+
+### Fixed
+- **请求体大小预检扣除图片 base64 字节** (`src/anthropic/handlers.rs`)
+  - 新增 `total_image_bytes()` 函数，计算 KiroRequest 中所有图片 base64 数据的总字节数
+  - 请求体大小阈值判断时扣除图片字节数，避免含图片的请求被误拒（图片在上游按像素块计 token，不应计入 body 大小阈值）
+  - 自适应压缩循环中每轮重新计算图片字节（历史截断可能移除含图片的消息）
+  - 错误提示信息增加 image_bytes 和 effective_bytes 字段，便于排查
+
 ## [v1.0.12] - 2026-02-14
 
 ### Fixed

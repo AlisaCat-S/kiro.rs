@@ -66,13 +66,42 @@ struct AdaptiveCompressionOutcome {
     final_tool_use_input_max_chars: usize,
 }
 
+/// 计算 KiroRequest 中所有图片 base64 数据的总字节数。
+///
+/// 图片在上游 API 中按像素块计算 token，而非按 base64 字节数，
+/// 因此在做请求体大小阈值判断时应扣除这部分字节，避免误拒。
+fn total_image_bytes(kiro_request: &KiroRequest) -> usize {
+    let state = &kiro_request.conversation_state;
+    let mut total = 0usize;
+
+    // currentMessage 中的图片
+    for img in &state.current_message.user_input_message.images {
+        total += img.source.bytes.len();
+    }
+
+    // 历史消息中的图片
+    for msg in &state.history {
+        if let crate::kiro::model::requests::conversation::Message::User(user_msg) = msg {
+            for img in &user_msg.user_input_message.images {
+                total += img.source.bytes.len();
+            }
+        }
+    }
+
+    total
+}
+
 fn adaptive_shrink_request_body(
     kiro_request: &mut KiroRequest,
     base_config: &crate::model::config::CompressionConfig,
     max_body: usize,
     request_body: &mut String,
 ) -> Result<Option<AdaptiveCompressionOutcome>, serde_json::Error> {
-    if max_body == 0 || request_body.len() <= max_body || !base_config.enabled {
+    // 扣除图片 base64 数据的字节数：图片在上游按像素块计 token，不应计入 body 大小阈值
+    let img_bytes = total_image_bytes(kiro_request);
+    let effective_len = request_body.len().saturating_sub(img_bytes);
+
+    if max_body == 0 || effective_len <= max_body || !base_config.enabled {
         return Ok(None);
     }
 
@@ -94,7 +123,9 @@ fn adaptive_shrink_request_body(
     let mut adaptive_config = base_config.clone();
 
     for _ in 0..ADAPTIVE_COMPRESSION_MAX_ITERS {
-        if request_body.len() <= max_body {
+        // 每轮重新计算图片字节（历史截断可能移除含图片的消息）
+        let loop_img_bytes = total_image_bytes(kiro_request);
+        if request_body.len().saturating_sub(loop_img_bytes) <= max_body {
             break;
         }
 
@@ -409,9 +440,11 @@ pub async fn post_messages(
         }
     };
 
-    // 请求体大小预检
+    // 请求体大小预检（扣除图片 base64 字节：图片按像素块计 token，不应计入 body 大小阈值）
     let max_body = state.compression_config.max_request_body_bytes;
-    if max_body > 0 && request_body.len() > max_body && state.compression_config.enabled {
+    let img_bytes = total_image_bytes(&kiro_request);
+    let effective_body_len = request_body.len().saturating_sub(img_bytes);
+    if max_body > 0 && effective_body_len > max_body && state.compression_config.enabled {
         // 自适应二次压缩：按 request_body_bytes 迭代截断，尽量把请求缩到阈值内
         match adaptive_shrink_request_body(
             &mut kiro_request,
@@ -446,9 +479,14 @@ pub async fn post_messages(
         }
     }
 
-    if max_body > 0 && request_body.len() > max_body {
+    // 压缩后再次检查（扣除图片字节）
+    let final_img_bytes = total_image_bytes(&kiro_request);
+    let final_effective_len = request_body.len().saturating_sub(final_img_bytes);
+    if max_body > 0 && final_effective_len > max_body {
         tracing::warn!(
             request_body_bytes = request_body.len(),
+            image_bytes = final_img_bytes,
+            effective_bytes = final_effective_len,
             threshold = max_body,
             "请求体超过安全阈值，拒绝发送"
         );
@@ -457,8 +495,10 @@ pub async fn post_messages(
             Json(ErrorResponse::new(
                 "invalid_request_error",
                 format!(
-                    "Request too large ({} bytes, limit {}). Reduce conversation history or tool output.",
+                    "Request too large ({} bytes, {} image bytes excluded, {} effective, limit {}). Reduce conversation history or tool output.",
                     request_body.len(),
+                    final_img_bytes,
+                    final_effective_len,
                     max_body
                 ),
             )),
@@ -991,9 +1031,11 @@ pub async fn post_messages_cc(
         }
     };
 
-    // 请求体大小预检
+    // 请求体大小预检（扣除图片 base64 字节：图片按像素块计 token，不应计入 body 大小阈值）
     let max_body = state.compression_config.max_request_body_bytes;
-    if max_body > 0 && request_body.len() > max_body && state.compression_config.enabled {
+    let img_bytes = total_image_bytes(&kiro_request);
+    let effective_body_len = request_body.len().saturating_sub(img_bytes);
+    if max_body > 0 && effective_body_len > max_body && state.compression_config.enabled {
         // 自适应二次压缩：按 request_body_bytes 迭代截断，尽量把请求缩到阈值内
         match adaptive_shrink_request_body(
             &mut kiro_request,
@@ -1028,9 +1070,14 @@ pub async fn post_messages_cc(
         }
     }
 
-    if max_body > 0 && request_body.len() > max_body {
+    // 压缩后再次检查（扣除图片字节）
+    let final_img_bytes = total_image_bytes(&kiro_request);
+    let final_effective_len = request_body.len().saturating_sub(final_img_bytes);
+    if max_body > 0 && final_effective_len > max_body {
         tracing::warn!(
             request_body_bytes = request_body.len(),
+            image_bytes = final_img_bytes,
+            effective_bytes = final_effective_len,
             threshold = max_body,
             "请求体超过安全阈值，拒绝发送"
         );
@@ -1039,8 +1086,10 @@ pub async fn post_messages_cc(
             Json(ErrorResponse::new(
                 "invalid_request_error",
                 format!(
-                    "Request too large ({} bytes, limit {}). Reduce conversation history or tool output.",
+                    "Request too large ({} bytes, {} image bytes excluded, {} effective, limit {}). Reduce conversation history or tool output.",
                     request_body.len(),
+                    final_img_bytes,
+                    final_effective_len,
                     max_body
                 ),
             )),
