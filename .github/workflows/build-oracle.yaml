@@ -1,4 +1,4 @@
-name: Build for Oracle Linux ARM64 (Strict Compatibility)
+name: Build for Oracle Linux (Strict Compatibility)
 
 on:
   push:
@@ -9,7 +9,16 @@ permissions:
 
 jobs:
   build-in-container:
-    runs-on: ubuntu-24.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+          - runner: ubuntu-24.04
+            arch: amd64
+
+    runs-on: ${{ matrix.runner }}
 
     container:
       image: oraclelinux:8
@@ -44,20 +53,20 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: kiro-rs-oracle-linux-8-arm64
+          name: kiro-rs-oracle-linux-8-${{ matrix.arch }}
           path: target/release/kiro-rs
 
       - name: Get version
         id: version
         run: |
           VERSION=$(TZ='Asia/Shanghai' date +'%Y%m%d-%H%M%S')
-          echo "version=v${VERSION}-oracle-arm64" >> $GITHUB_OUTPUT
+          echo "version=v${VERSION}-oracle-${{ matrix.arch }}" >> $GITHUB_OUTPUT
 
       - name: Create Release and upload
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.version }}
           name: ${{ steps.version.outputs.version }}
-          body: "Oracle Linux 8 ARM64 build from commit ${{ github.sha }}"
+          body: "Oracle Linux 8 ${{ matrix.arch }} build from commit ${{ github.sha }}"
           make_latest: false
           files: target/release/kiro-rs
