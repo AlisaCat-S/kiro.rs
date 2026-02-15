@@ -238,8 +238,15 @@ pub async fn post_messages(
         return websearch::handle_websearch_request(provider, &payload, input_tokens).await;
     }
 
+    // 获取压缩模式
+    let compression_mode = state
+        .kiro_provider
+        .as_ref()
+        .map(|p| p.token_manager().get_tool_compression_mode())
+        .unwrap_or_else(|| "schema".to_string());
+
     // 转换请求
-    let conversion_result = match convert_request(&payload) {
+    let conversion_result = match convert_request(&payload, &compression_mode) {
         Ok(result) => result,
         Err(e) => {
             let (error_type, message) = match &e {
@@ -799,8 +806,15 @@ pub async fn post_messages_cc(
         return websearch::handle_websearch_request(provider, &payload, input_tokens).await;
     }
 
+    // 获取压缩模式
+    let compression_mode = state
+        .kiro_provider
+        .as_ref()
+        .map(|p| p.token_manager().get_tool_compression_mode())
+        .unwrap_or_else(|| "schema".to_string());
+
     // 转换请求
-    let conversion_result = match convert_request(&payload) {
+    let conversion_result = match convert_request(&payload, &compression_mode) {
         Ok(result) => result,
         Err(e) => {
             let (error_type, message) = match &e {

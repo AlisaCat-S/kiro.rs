@@ -166,7 +166,10 @@ fn create_placeholder_tool(name: &str) -> Tool {
 }
 
 /// 将 Anthropic 请求转换为 Kiro 请求
-pub fn convert_request(req: &MessagesRequest) -> Result<ConversionResult, ConversionError> {
+pub fn convert_request(
+    req: &MessagesRequest,
+    compression_mode: &str,
+) -> Result<ConversionResult, ConversionError> {
     // 1. 映射模型
     let model_id = map_model(&req.model)
         .ok_or_else(|| ConversionError::UnsupportedModel(req.model.clone()))?;
@@ -194,10 +197,10 @@ pub fn convert_request(req: &MessagesRequest) -> Result<ConversionResult, Conver
     let (text_content, images, tool_results) = process_message_content(&last_message.content)?;
 
     // 6. 转换工具定义
-    let mut tools = convert_tools(&req.tools);
+    let (mut tools, tool_documentation) = convert_tools(&req.tools, compression_mode);
 
     // 7. 构建历史消息（需要先构建，以便收集历史中使用的工具）
-    let mut history = build_history(req, &model_id)?;
+    let mut history = build_history(req, &model_id, &tool_documentation)?;
 
     // 8. 验证并过滤 tool_use/tool_result 配对
     // 移除孤立的 tool_result（没有对应的 tool_use）
@@ -471,10 +474,17 @@ fn remove_orphaned_tool_uses(
 }
 
 /// 转换工具定义
-fn convert_tools(tools: &Option<Vec<super::types::Tool>>) -> Vec<Tool> {
+fn convert_tools(
+    tools: &Option<Vec<super::types::Tool>>,
+    compression_mode: &str,
+) -> (Vec<Tool>, String) {
     let Some(tools) = tools else {
-        return Vec::new();
+        return (Vec::new(), String::new());
     };
+
+    if tools.is_empty() {
+        return (Vec::new(), String::new());
+    }
 
     let converted: Vec<Tool> = tools
         .iter()
@@ -508,8 +518,18 @@ fn convert_tools(tools: &Option<Vec<super::types::Tool>>) -> Vec<Tool> {
         })
         .collect();
 
-    // 如果工具总大小超过阈值，进行压缩
-    super::tool_compression::compress_tools_if_needed(&converted)
+    match compression_mode {
+        "elevate" => super::tool_compression::elevate_long_descriptions(&converted),
+        "hybrid" => {
+            let (elevated, doc) = super::tool_compression::elevate_long_descriptions(&converted);
+            let compressed = super::tool_compression::compress_tools_if_needed(&elevated);
+            (compressed, doc)
+        }
+        _ => {
+            let compressed = super::tool_compression::compress_tools_if_needed(&converted);
+            (compressed, String::new())
+        }
+    }
 }
 
 /// 生成thinking标签前缀
@@ -541,7 +561,11 @@ fn has_thinking_tags(content: &str) -> bool {
 }
 
 /// 构建历史消息
-fn build_history(req: &MessagesRequest, model_id: &str) -> Result<Vec<Message>, ConversionError> {
+fn build_history(
+    req: &MessagesRequest,
+    model_id: &str,
+    tool_documentation: &str,
+) -> Result<Vec<Message>, ConversionError> {
     let mut history = Vec::new();
 
     // 生成thinking前缀（如果需要）
@@ -549,11 +573,19 @@ fn build_history(req: &MessagesRequest, model_id: &str) -> Result<Vec<Message>, 
 
     // 1. 处理系统消息
     if let Some(ref system) = req.system {
-        let system_content: String = system
+        let mut system_content: String = system
             .iter()
             .map(|s| s.text.clone())
             .collect::<Vec<_>>()
             .join("\n");
+
+        // 如果有工具文档（elevate/hybrid 模式），追加到系统消息
+        if !tool_documentation.is_empty() {
+            if !system_content.is_empty() {
+                system_content.push('\n');
+            }
+            system_content.push_str(tool_documentation);
+        }
 
         if !system_content.is_empty() {
             // 追加分块写入策略到系统消息
@@ -584,7 +616,20 @@ fn build_history(req: &MessagesRequest, model_id: &str) -> Result<Vec<Message>, 
         }
     } else if let Some(ref prefix) = thinking_prefix {
         // 没有系统消息但有thinking配置，插入新的系统消息
-        let user_msg = HistoryUserMessage::new(prefix.clone(), model_id);
+        let mut content = prefix.clone();
+        if !tool_documentation.is_empty() {
+            if !content.is_empty() {
+                content.push('\n');
+            }
+            content.push_str(tool_documentation);
+        }
+        let user_msg = HistoryUserMessage::new(content, model_id);
+        history.push(Message::User(user_msg));
+
+        let assistant_msg = HistoryAssistantMessage::new("I will follow these instructions.");
+        history.push(Message::Assistant(assistant_msg));
+    } else if !tool_documentation.is_empty() {
+        let user_msg = HistoryUserMessage::new(tool_documentation.to_string(), model_id);
         history.push(Message::User(user_msg));
 
         let assistant_msg = HistoryAssistantMessage::new("I will follow these instructions.");
@@ -904,7 +949,7 @@ mod tests {
             metadata: None,
         };
 
-        let result = convert_request(&req).unwrap();
+        let result = convert_request(&req, "schema").unwrap();
 
         // 验证 tools 列表中包含了历史中使用的工具的占位符定义
         let tools = &result
@@ -973,7 +1018,7 @@ mod tests {
             }),
         };
 
-        let result = convert_request(&req).unwrap();
+        let result = convert_request(&req, "schema").unwrap();
         assert_eq!(
             result.conversation_state.conversation_id,
             "a0662283-7fd3-4399-a7eb-52b9a717ae88"
@@ -1001,7 +1046,7 @@ mod tests {
             metadata: None,
         };
 
-        let result = convert_request(&req).unwrap();
+        let result = convert_request(&req, "schema").unwrap();
         // 验证生成的是有效的 UUID 格式
         assert_eq!(result.conversation_state.conversation_id.len(), 36);
         assert_eq!(

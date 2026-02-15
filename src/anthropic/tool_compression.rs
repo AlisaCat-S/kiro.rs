@@ -180,3 +180,57 @@ pub fn compress_tools_if_needed(tools: &[Tool]) -> Vec<Tool> {
 
     compressed
 }
+
+/// 描述提升阈值（单个工具描述超过此长度时提升到 system prompt）
+const TOOL_DESCRIPTION_ELEVATE_THRESHOLD: usize = 10000;
+
+/// 将超长工具描述提升到 system prompt（KiroGate 方案）
+///
+/// 返回 (处理后的工具列表, 需要追加到 system prompt 的文档字符串)
+pub fn elevate_long_descriptions(tools: &[Tool]) -> (Vec<Tool>, String) {
+    if tools.is_empty() {
+        return (tools.to_vec(), String::new());
+    }
+
+    let mut processed_tools = Vec::new();
+    let mut doc_parts: Vec<String> = Vec::new();
+
+    for tool in tools {
+        let desc = &tool.tool_specification.description;
+        if desc.len() <= TOOL_DESCRIPTION_ELEVATE_THRESHOLD {
+            processed_tools.push(tool.clone());
+        } else {
+            let tool_name = &tool.tool_specification.name;
+            tracing::info!(
+                "工具 '{}' 描述过长 ({} 字符 > {} 阈值)，提升到 system prompt",
+                tool_name,
+                desc.len(),
+                TOOL_DESCRIPTION_ELEVATE_THRESHOLD
+            );
+
+            doc_parts.push(format!("## Tool: {}\n\n{}", tool_name, desc));
+
+            processed_tools.push(Tool {
+                tool_specification: ToolSpecification {
+                    name: tool_name.clone(),
+                    description: format!(
+                        "[Full documentation in system prompt under '## Tool: {}']",
+                        tool_name
+                    ),
+                    input_schema: tool.tool_specification.input_schema.clone(),
+                },
+            });
+        }
+    }
+
+    let documentation = if doc_parts.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\n---\n# Tool Documentation\nThe following tools have detailed documentation that couldn't fit in the tool definition.\n\n{}\n",
+            doc_parts.join("\n\n---\n\n")
+        )
+    };
+
+    (processed_tools, documentation)
+}
