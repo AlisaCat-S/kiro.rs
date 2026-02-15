@@ -101,27 +101,15 @@ fn compress_description(description: &str, target_length: usize) -> String {
 
 /// 如果工具总大小超过阈值则压缩
 ///
-/// 返回压缩后的工具列表（如果不需要压缩则返回原列表的克隆）
-pub fn compress_tools_if_needed(tools: &[Tool]) -> Vec<Tool> {
+pub fn compress_tools_if_needed(tools: &[Tool]) -> (Vec<Tool>, Option<(usize, usize)>) {
     if tools.is_empty() {
-        return tools.to_vec();
+        return (tools.to_vec(), None);
     }
 
     let original_size = calculate_tools_size(tools);
     if original_size <= TOOL_COMPRESSION_TARGET_SIZE {
-        tracing::debug!(
-            "工具大小 {} 字节在目标 {} 字节内，无需压缩",
-            original_size,
-            TOOL_COMPRESSION_TARGET_SIZE
-        );
-        return tools.to_vec();
+        return (tools.to_vec(), None);
     }
-
-    tracing::info!(
-        "工具大小 {} 字节超过目标 {} 字节，开始压缩",
-        original_size,
-        TOOL_COMPRESSION_TARGET_SIZE
-    );
 
     // 第一步：简化 input_schema
     let mut compressed: Vec<Tool> = tools
@@ -141,15 +129,8 @@ pub fn compress_tools_if_needed(tools: &[Tool]) -> Vec<Tool> {
         .collect();
 
     let size_after_schema = calculate_tools_size(&compressed);
-    tracing::debug!(
-        "schema 简化后大小: {} 字节 (减少 {} 字节)",
-        size_after_schema,
-        original_size - size_after_schema
-    );
-
     if size_after_schema <= TOOL_COMPRESSION_TARGET_SIZE {
-        tracing::info!("schema 简化后已达标，最终大小: {} 字节", size_after_schema);
-        return compressed;
+        return (compressed, Some((original_size, size_after_schema)));
     }
 
     // 第二步：按比例压缩 description
@@ -171,14 +152,7 @@ pub fn compress_tools_if_needed(tools: &[Tool]) -> Vec<Tool> {
     }
 
     let final_size = calculate_tools_size(&compressed);
-    tracing::info!(
-        "压缩完成，原始: {} 字节, 最终: {} 字节 ({:.1}% 减少)",
-        original_size,
-        final_size,
-        (original_size - final_size) as f64 / original_size as f64 * 100.0
-    );
-
-    compressed
+    (compressed, Some((original_size, final_size)))
 }
 
 /// 描述提升阈值（单个工具描述超过此长度时提升到 system prompt）
@@ -186,10 +160,9 @@ const TOOL_DESCRIPTION_ELEVATE_THRESHOLD: usize = 10000;
 
 /// 将超长工具描述提升到 system prompt（KiroGate 方案）
 ///
-/// 返回 (处理后的工具列表, 需要追加到 system prompt 的文档字符串)
-pub fn elevate_long_descriptions(tools: &[Tool]) -> (Vec<Tool>, String) {
+pub fn elevate_long_descriptions(tools: &[Tool]) -> (Vec<Tool>, String, usize) {
     if tools.is_empty() {
-        return (tools.to_vec(), String::new());
+        return (tools.to_vec(), String::new(), 0);
     }
 
     let mut processed_tools = Vec::new();
@@ -201,7 +174,7 @@ pub fn elevate_long_descriptions(tools: &[Tool]) -> (Vec<Tool>, String) {
             processed_tools.push(tool.clone());
         } else {
             let tool_name = &tool.tool_specification.name;
-            tracing::info!(
+            tracing::debug!(
                 "工具 '{}' 描述过长 ({} 字符 > {} 阈值)，提升到 system prompt",
                 tool_name,
                 desc.len(),
@@ -232,5 +205,5 @@ pub fn elevate_long_descriptions(tools: &[Tool]) -> (Vec<Tool>, String) {
         )
     };
 
-    (processed_tools, documentation)
+    (processed_tools, documentation, doc_parts.len())
 }

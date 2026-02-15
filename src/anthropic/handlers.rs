@@ -266,6 +266,40 @@ pub async fn post_messages(
         }
     };
 
+    let system_size = payload
+        .system
+        .as_ref()
+        .map(|s| serde_json::to_string(s).map(|j| j.len()).unwrap_or(0))
+        .unwrap_or(0);
+    let messages_size = serde_json::to_string(&payload.messages)
+        .map(|j| j.len())
+        .unwrap_or(0);
+
+    let mode_label = match compression_mode.as_str() {
+        "elevate" => "描述提升",
+        "hybrid" => "混合模式",
+        _ => "Schema精简",
+    };
+    let mut stats = format!(
+        "[{}] tools={} system={} messages={} max_tokens={}",
+        mode_label,
+        format_size(conversion_result.tools_size),
+        format_size(system_size),
+        format_size(messages_size),
+        payload.max_tokens,
+    );
+    if compression_mode == "elevate" || compression_mode == "hybrid" {
+        stats.push_str(&format!(" elevated={}", conversion_result.elevated_tool_count));
+    }
+    if let Some((original, compressed)) = conversion_result.compression_stats {
+        stats.push_str(&format!(
+            " compressed={}→{}",
+            format_size(original),
+            format_size(compressed)
+        ));
+    }
+    tracing::info!("{}", stats);
+
     // 构建 Kiro 请求
     let kiro_request = KiroRequest {
         conversation_state: conversion_result.conversation_state,
@@ -369,6 +403,14 @@ const PING_INTERVAL_SECS: u64 = 25;
 /// 创建 ping 事件的 SSE 字符串
 fn create_ping_sse() -> Bytes {
     Bytes::from("event: ping\ndata: {\"type\": \"ping\"}\n\n")
+}
+
+fn format_size(bytes: usize) -> String {
+    if bytes >= 1024 {
+        format!("{:.1}KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{}B", bytes)
+    }
 }
 
 /// 创建 SSE 事件流
@@ -833,6 +875,40 @@ pub async fn post_messages_cc(
                 .into_response();
         }
     };
+
+    let system_size = payload
+        .system
+        .as_ref()
+        .map(|s| serde_json::to_string(s).map(|j| j.len()).unwrap_or(0))
+        .unwrap_or(0);
+    let messages_size = serde_json::to_string(&payload.messages)
+        .map(|j| j.len())
+        .unwrap_or(0);
+
+    let mode_label = match compression_mode.as_str() {
+        "elevate" => "描述提升",
+        "hybrid" => "混合模式",
+        _ => "Schema精简",
+    };
+    let mut stats = format!(
+        "[{}] tools={} system={} messages={} max_tokens={}",
+        mode_label,
+        format_size(conversion_result.tools_size),
+        format_size(system_size),
+        format_size(messages_size),
+        payload.max_tokens,
+    );
+    if compression_mode == "elevate" || compression_mode == "hybrid" {
+        stats.push_str(&format!(" elevated={}", conversion_result.elevated_tool_count));
+    }
+    if let Some((original, compressed)) = conversion_result.compression_stats {
+        stats.push_str(&format!(
+            " compressed={}→{}",
+            format_size(original),
+            format_size(compressed)
+        ));
+    }
+    tracing::info!("{}", stats);
 
     // 构建 Kiro 请求
     let kiro_request = KiroRequest {

@@ -87,6 +87,9 @@ pub fn is_agentic_model(model: &str) -> bool {
 pub struct ConversionResult {
     /// 转换后的 Kiro 请求
     pub conversation_state: ConversationState,
+    pub tools_size: usize,
+    pub elevated_tool_count: usize,
+    pub compression_stats: Option<(usize, usize)>,
 }
 
 /// 转换错误
@@ -197,7 +200,9 @@ pub fn convert_request(
     let (text_content, images, tool_results) = process_message_content(&last_message.content)?;
 
     // 6. 转换工具定义
-    let (mut tools, tool_documentation) = convert_tools(&req.tools, compression_mode);
+    let (mut tools, tool_documentation, elevated_tool_count, compression_stats) =
+        convert_tools(&req.tools, compression_mode);
+    let tools_size = serde_json::to_string(&tools).map(|s| s.len()).unwrap_or(0);
 
     // 7. 构建历史消息（需要先构建，以便收集历史中使用的工具）
     let mut history = build_history(req, &model_id, &tool_documentation)?;
@@ -257,7 +262,12 @@ pub fn convert_request(
         .with_current_message(current_message)
         .with_history(history);
 
-    Ok(ConversionResult { conversation_state })
+    Ok(ConversionResult {
+        conversation_state,
+        tools_size,
+        elevated_tool_count,
+        compression_stats,
+    })
 }
 
 /// 确定聊天触发类型
@@ -477,13 +487,13 @@ fn remove_orphaned_tool_uses(
 fn convert_tools(
     tools: &Option<Vec<super::types::Tool>>,
     compression_mode: &str,
-) -> (Vec<Tool>, String) {
+) -> (Vec<Tool>, String, usize, Option<(usize, usize)>) {
     let Some(tools) = tools else {
-        return (Vec::new(), String::new());
+        return (Vec::new(), String::new(), 0, None);
     };
 
     if tools.is_empty() {
-        return (Vec::new(), String::new());
+        return (Vec::new(), String::new(), 0, None);
     }
 
     let converted: Vec<Tool> = tools
@@ -519,15 +529,22 @@ fn convert_tools(
         .collect();
 
     match compression_mode {
-        "elevate" => super::tool_compression::elevate_long_descriptions(&converted),
+        "elevate" => {
+            let (tools, doc, elevated_count) =
+                super::tool_compression::elevate_long_descriptions(&converted);
+            (tools, doc, elevated_count, None)
+        }
         "hybrid" => {
-            let (elevated, doc) = super::tool_compression::elevate_long_descriptions(&converted);
-            let compressed = super::tool_compression::compress_tools_if_needed(&elevated);
-            (compressed, doc)
+            let (elevated, doc, elevated_count) =
+                super::tool_compression::elevate_long_descriptions(&converted);
+            let (compressed, compression_stats) =
+                super::tool_compression::compress_tools_if_needed(&elevated);
+            (compressed, doc, elevated_count, compression_stats)
         }
         _ => {
-            let compressed = super::tool_compression::compress_tools_if_needed(&converted);
-            (compressed, String::new())
+            let (compressed, compression_stats) =
+                super::tool_compression::compress_tools_if_needed(&converted);
+            (compressed, String::new(), 0, compression_stats)
         }
     }
 }
