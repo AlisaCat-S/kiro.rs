@@ -436,6 +436,7 @@ pub struct MultiTokenManager {
     is_multiple_format: bool,
     /// 负载均衡模式（运行时可修改）
     load_balancing_mode: Mutex<String>,
+    tool_compression_mode: Mutex<String>,
     /// 最近一次统计持久化时间（用于 debounce）
     last_stats_save_at: Mutex<Option<Instant>>,
     /// 统计数据是否有未落盘更新
@@ -535,6 +536,7 @@ impl MultiTokenManager {
             .unwrap_or(0);
 
         let load_balancing_mode = config.load_balancing_mode.clone();
+        let tool_compression_mode = config.tool_compression_mode.clone();
         let manager = Self {
             config,
             proxy,
@@ -544,6 +546,7 @@ impl MultiTokenManager {
             credentials_path,
             is_multiple_format,
             load_balancing_mode: Mutex::new(load_balancing_mode),
+            tool_compression_mode: Mutex::new(tool_compression_mode),
             last_stats_save_at: Mutex::new(None),
             stats_dirty: AtomicBool::new(false),
         };
@@ -1522,6 +1525,54 @@ impl MultiTokenManager {
     /// 获取负载均衡模式（Admin API）
     pub fn get_load_balancing_mode(&self) -> String {
         self.load_balancing_mode.lock().clone()
+    }
+
+    /// 获取工具压缩模式（Admin API）
+    pub fn get_tool_compression_mode(&self) -> String {
+        self.tool_compression_mode.lock().clone()
+    }
+
+    fn persist_tool_compression_mode(&self, mode: &str) -> anyhow::Result<()> {
+        use anyhow::Context;
+
+        let config_path = match self.config.config_path() {
+            Some(path) => path.to_path_buf(),
+            None => {
+                tracing::warn!("配置文件路径未知，工具压缩模式仅在当前进程生效: {}", mode);
+                return Ok(());
+            }
+        };
+
+        let mut config = Config::load(&config_path)
+            .with_context(|| format!("重新加载配置失败: {}", config_path.display()))?;
+        config.tool_compression_mode = mode.to_string();
+        config
+            .save()
+            .with_context(|| format!("持久化工具压缩模式失败: {}", config_path.display()))?;
+
+        Ok(())
+    }
+
+    /// 设置工具压缩模式（Admin API）
+    pub fn set_tool_compression_mode(&self, mode: String) -> anyhow::Result<()> {
+        if mode != "schema" && mode != "elevate" && mode != "hybrid" {
+            anyhow::bail!("无效的工具压缩模式: {}", mode);
+        }
+
+        let previous_mode = self.get_tool_compression_mode();
+        if previous_mode == mode {
+            return Ok(());
+        }
+
+        *self.tool_compression_mode.lock() = mode.clone();
+
+        if let Err(err) = self.persist_tool_compression_mode(&mode) {
+            *self.tool_compression_mode.lock() = previous_mode;
+            return Err(err);
+        }
+
+        tracing::info!("工具压缩模式已设置为: {}", mode);
+        Ok(())
     }
 
     fn persist_load_balancing_mode(&self, mode: &str) -> anyhow::Result<()> {

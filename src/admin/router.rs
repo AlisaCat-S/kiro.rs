@@ -1,17 +1,19 @@
 //! Admin API 路由配置
 
 use axum::{
-    Router, middleware,
+    middleware,
     routing::{delete, get, post},
+    Router,
 };
 
 use super::{
     handlers::{
         add_credential, delete_credential, get_all_credentials, get_credential_balance,
-        get_load_balancing_mode, reset_failure_count, set_credential_disabled,
-        set_credential_priority, set_load_balancing_mode,
+        get_load_balancing_mode, get_tool_compression_mode, reset_failure_count,
+        set_credential_disabled, set_credential_priority, set_load_balancing_mode,
+        set_tool_compression_mode,
     },
-    middleware::{AdminState, admin_auth_middleware},
+    middleware::{admin_auth_middleware, AdminState},
 };
 
 /// 创建 Admin API 路由
@@ -45,6 +47,10 @@ pub fn create_admin_router(state: AdminState) -> Router {
         .route(
             "/config/load-balancing",
             get(get_load_balancing_mode).put(set_load_balancing_mode),
+        )
+        .route(
+            "/config/tool-compression",
+            get(get_tool_compression_mode).put(set_tool_compression_mode),
         )
         .layer(middleware::from_fn_with_state(
             state.clone(),

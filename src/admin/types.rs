@@ -176,6 +176,24 @@ pub struct SetLoadBalancingModeRequest {
     pub mode: String,
 }
 
+// ============ 工具压缩配置 ============
+
+/// 工具压缩模式响应
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolCompressionModeResponse {
+    /// 当前模式（"schema"、"elevate" 或 "hybrid"）
+    pub mode: String,
+}
+
+/// 设置工具压缩模式请求
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetToolCompressionModeRequest {
+    /// 模式（"schema"、"elevate" 或 "hybrid"）
+    pub mode: String,
+}
+
 // ============ 通用响应 ============
 
 /// 操作成功响应

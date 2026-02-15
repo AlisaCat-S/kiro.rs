@@ -90,6 +90,10 @@ pub struct Config {
     #[serde(default = "default_load_balancing_mode")]
     pub load_balancing_mode: String,
 
+    /// 工具压缩模式（"schema"、"elevate" 或 "hybrid"）
+    #[serde(default = "default_tool_compression_mode")]
+    pub tool_compression_mode: String,
+
     /// 配置文件路径（运行时元数据，不写入 JSON）
     #[serde(skip)]
     config_path: Option<PathBuf>,
@@ -132,6 +136,10 @@ fn default_load_balancing_mode() -> String {
     "priority".to_string()
 }
 
+fn default_tool_compression_mode() -> String {
+    "schema".to_string()
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -154,6 +162,7 @@ impl Default for Config {
             proxy_password: None,
             admin_api_key: None,
             load_balancing_mode: default_load_balancing_mode(),
+            tool_compression_mode: default_tool_compression_mode(),
             config_path: None,
         }
     }
@@ -206,7 +215,8 @@ impl Config {
             .ok_or_else(|| anyhow::anyhow!("配置文件路径未知，无法保存配置"))?;
 
         let content = serde_json::to_string_pretty(self).context("序列化配置失败")?;
-        fs::write(path, content).with_context(|| format!("写入配置文件失败: {}", path.display()))?;
+        fs::write(path, content)
+            .with_context(|| format!("写入配置文件失败: {}", path.display()))?;
         Ok(())
     }
 }

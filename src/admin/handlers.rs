@@ -9,8 +9,8 @@ use axum::{
 use super::{
     middleware::AdminState,
     types::{
-        AddCredentialRequest, SetDisabledRequest, SetLoadBalancingModeRequest, SetPriorityRequest,
-        SuccessResponse,
+        AddCredentialRequest, SetDisabledRequest, SetLoadBalancingModeRequest,
+        SetPriorityRequest, SetToolCompressionModeRequest, SuccessResponse,
     },
 };
 
@@ -120,6 +120,25 @@ pub async fn set_load_balancing_mode(
     Json(payload): Json<SetLoadBalancingModeRequest>,
 ) -> impl IntoResponse {
     match state.service.set_load_balancing_mode(payload) {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+/// GET /api/admin/config/tool-compression
+/// 获取工具压缩模式
+pub async fn get_tool_compression_mode(State(state): State<AdminState>) -> impl IntoResponse {
+    let response = state.service.get_tool_compression_mode();
+    Json(response)
+}
+
+/// PUT /api/admin/config/tool-compression
+/// 设置工具压缩模式
+pub async fn set_tool_compression_mode(
+    State(state): State<AdminState>,
+    Json(payload): Json<SetToolCompressionModeRequest>,
+) -> impl IntoResponse {
+    match state.service.set_tool_compression_mode(payload) {
         Ok(response) => Json(response).into_response(),
         Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
     }

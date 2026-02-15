@@ -15,6 +15,7 @@ use super::error::AdminServiceError;
 use super::types::{
     AddCredentialRequest, AddCredentialResponse, BalanceResponse, CredentialStatusItem,
     CredentialsStatusResponse, LoadBalancingModeResponse, SetLoadBalancingModeRequest,
+    SetToolCompressionModeRequest, ToolCompressionModeResponse,
 };
 
 /// 余额缓存过期时间（秒），5 分钟
@@ -269,6 +270,31 @@ impl AdminService {
             .map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
 
         Ok(LoadBalancingModeResponse { mode: req.mode })
+    }
+
+    /// 获取工具压缩模式
+    pub fn get_tool_compression_mode(&self) -> ToolCompressionModeResponse {
+        ToolCompressionModeResponse {
+            mode: self.token_manager.get_tool_compression_mode(),
+        }
+    }
+
+    /// 设置工具压缩模式
+    pub fn set_tool_compression_mode(
+        &self,
+        req: SetToolCompressionModeRequest,
+    ) -> Result<ToolCompressionModeResponse, AdminServiceError> {
+        if req.mode != "schema" && req.mode != "elevate" && req.mode != "hybrid" {
+            return Err(AdminServiceError::InvalidCredential(
+                "mode 必须是 'schema'、'elevate' 或 'hybrid'".to_string(),
+            ));
+        }
+
+        self.token_manager
+            .set_tool_compression_mode(req.mode.clone())
+            .map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
+
+        Ok(ToolCompressionModeResponse { mode: req.mode })
     }
 
     // ============ 余额缓存持久化 ============
