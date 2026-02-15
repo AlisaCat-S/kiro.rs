@@ -9,6 +9,8 @@ import {
   deleteCredential,
   getLoadBalancingMode,
   setLoadBalancingMode,
+  getToolCompressionMode,
+  setToolCompressionMode,
 } from '@/api/credentials'
 import type { AddCredentialRequest } from '@/types/api'
 
@@ -103,6 +105,25 @@ export function useSetLoadBalancingMode() {
     mutationFn: setLoadBalancingMode,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['loadBalancingMode'] })
+    },
+  })
+}
+
+// 获取工具压缩模式
+export function useToolCompressionMode() {
+  return useQuery({
+    queryKey: ['toolCompressionMode'],
+    queryFn: getToolCompressionMode,
+  })
+}
+
+// 设置工具压缩模式
+export function useSetToolCompressionMode() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: setToolCompressionMode,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['toolCompressionMode'] })
     },
   })
 }

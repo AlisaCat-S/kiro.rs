@@ -80,3 +80,10 @@ export interface AddCredentialResponse {
   credentialId: number
   email?: string
 }
+
+// 工具压缩模式
+export type ToolCompressionMode = 'schema' | 'elevate' | 'hybrid'
+
+export interface ToolCompressionModeResponse {
+  mode: ToolCompressionMode
+}

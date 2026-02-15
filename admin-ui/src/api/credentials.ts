@@ -96,3 +96,15 @@ export async function setLoadBalancingMode(mode: 'priority' | 'balanced'): Promi
   const { data } = await api.put<{ mode: 'priority' | 'balanced' }>('/config/load-balancing', { mode })
   return data
 }
+
+// 获取工具压缩模式
+export async function getToolCompressionMode(): Promise<{ mode: 'schema' | 'elevate' | 'hybrid' }> {
+  const { data } = await api.get<{ mode: 'schema' | 'elevate' | 'hybrid' }>('/config/tool-compression')
+  return data
+}
+
+// 设置工具压缩模式
+export async function setToolCompressionMode(mode: 'schema' | 'elevate' | 'hybrid'): Promise<{ mode: 'schema' | 'elevate' | 'hybrid' }> {
+  const { data } = await api.put<{ mode: 'schema' | 'elevate' | 'hybrid' }>('/config/tool-compression', { mode })
+  return data
+}

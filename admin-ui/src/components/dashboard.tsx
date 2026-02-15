@@ -11,7 +11,8 @@ import { BalanceDialog } from '@/components/balance-dialog'
 import { AddCredentialDialog } from '@/components/add-credential-dialog'
 import { BatchImportDialog } from '@/components/batch-import-dialog'
 import { BatchVerifyDialog, type VerifyResult } from '@/components/batch-verify-dialog'
-import { useCredentials, useDeleteCredential, useResetFailure, useLoadBalancingMode, useSetLoadBalancingMode } from '@/hooks/use-credentials'
+import { CompressionModeDialog } from '@/components/compression-mode-dialog'
+import { useCredentials, useDeleteCredential, useResetFailure, useLoadBalancingMode, useSetLoadBalancingMode, useToolCompressionMode } from '@/hooks/use-credentials'
 import { getCredentialBalance } from '@/api/credentials'
 import { extractErrorMessage } from '@/lib/utils'
 import type { BalanceResponse } from '@/types/api'
@@ -30,6 +31,7 @@ export function Dashboard({ onLogout }: DashboardProps) {
   const [verifying, setVerifying] = useState(false)
   const [verifyProgress, setVerifyProgress] = useState({ current: 0, total: 0 })
   const [verifyResults, setVerifyResults] = useState<Map<number, VerifyResult>>(new Map())
+  const [compressionDialogOpen, setCompressionDialogOpen] = useState(false)
   const [balanceMap, setBalanceMap] = useState<Map<number, BalanceResponse>>(new Map())
   const [loadingBalanceIds, setLoadingBalanceIds] = useState<Set<number>>(new Set())
   const [queryingInfo, setQueryingInfo] = useState(false)
@@ -48,6 +50,7 @@ export function Dashboard({ onLogout }: DashboardProps) {
   const { data, isLoading, error, refetch } = useCredentials()
   const { mutate: deleteCredential } = useDeleteCredential()
   const { mutate: resetFailure } = useResetFailure()
+  const { data: compressionData, isLoading: isLoadingCompression } = useToolCompressionMode()
   const { data: loadBalancingData, isLoading: isLoadingMode } = useLoadBalancingMode()
   const { mutate: setLoadBalancingMode, isPending: isSettingMode } = useSetLoadBalancingMode()
 
@@ -64,7 +67,9 @@ export function Dashboard({ onLogout }: DashboardProps) {
 
   // 当凭据列表变化时重置到第一页
   useEffect(() => {
-    setCurrentPage(1)
+    if (data?.credentials.length !== undefined) {
+      setCurrentPage(1)
+    }
   }, [data?.credentials.length])
 
   // 只保留当前仍存在的凭据缓存，避免删除后残留旧数据
@@ -499,6 +504,15 @@ export function Dashboard({ onLogout }: DashboardProps) {
             <Button
               variant="outline"
               size="sm"
+              onClick={() => setCompressionDialogOpen(true)}
+              disabled={isLoadingCompression}
+              title="设置工具压缩模式"
+            >
+              {isLoadingCompression ? '加载中...' : `压缩模式: ${compressionData?.mode || 'schema'}`}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
               onClick={handleToggleLoadBalancing}
               disabled={isLoadingMode || isSettingMode}
               title="切换负载均衡模式"
@@ -712,6 +726,11 @@ export function Dashboard({ onLogout }: DashboardProps) {
         progress={verifyProgress}
         results={verifyResults}
         onCancel={handleCancelVerify}
+      />
+
+      <CompressionModeDialog
+        open={compressionDialogOpen}
+        onOpenChange={setCompressionDialogOpen}
       />
     </div>
   )
