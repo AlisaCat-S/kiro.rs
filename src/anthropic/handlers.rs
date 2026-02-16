@@ -670,10 +670,11 @@ fn resolve_thinking(payload: &mut MessagesRequest) -> String {
         None => "None".to_string(),
     };
 
-    let is_opus_4_6 =
-        model_lower.contains("opus") && (model_lower.contains("4-6") || model_lower.contains("4.6"));
+    let is_opus_4_6_thinking = is_thinking_model
+        && model_lower.contains("opus")
+        && (model_lower.contains("4-6") || model_lower.contains("4.6"));
 
-    if !is_thinking_model {
+    if !is_opus_4_6_thinking {
         return match &payload.thinking {
             Some(t) if t.is_enabled() => {
                 if t.thinking_type == "adaptive" {
@@ -696,13 +697,10 @@ fn resolve_thinking(payload: &mut MessagesRequest) -> String {
         24576
     } else if model_lower.ends_with("-thinking-xhigh") {
         32768
-    } else if is_opus_4_6 {
-        24576
     } else {
         8192
     };
 
-    // 客户端发了 adaptive → 直接采用
     if let Some(t) = &payload.thinking {
         if t.is_enabled() && t.thinking_type == "adaptive" {
             return format!("[Think adaptive] model={} raw=[{}] 客户端:adaptive 采用", payload.model, client_raw);
