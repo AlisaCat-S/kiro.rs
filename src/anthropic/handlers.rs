@@ -25,7 +25,6 @@ use super::middleware::AppState;
 use super::stream::{BufferedStreamContext, SseEvent, StreamContext};
 use super::truncation;
 use super::types::{CountTokensRequest, CountTokensResponse, ErrorResponse, MessagesRequest, Model, ModelsResponse, OutputConfig, Thinking, get_context_window_size};
-use super::websearch;
 
 /// GET /v1/models
 ///
@@ -232,19 +231,8 @@ pub async fn post_messages(
     // 打印 Think 状态标识
     tracing::info!("{} model={}", format_think_tag(&payload.thinking), payload.model);
 
-    // 检查是否为 WebSearch 请求
-    if websearch::has_web_search_tool(&payload) {
-        tracing::info!("检测到 WebSearch 工具，路由到 WebSearch 处理");
-
-        // 估算输入 tokens
-        let input_tokens = token::count_all_tokens(
-            payload.model.clone(),
-            payload.system.clone(),
-            payload.messages.clone(),
-            payload.tools.clone(),
-        ) as i32;
-
-        return websearch::handle_websearch_request(provider, &payload, input_tokens).await;
+    if payload.tools.as_ref().is_some_and(|tools| tools.iter().any(|t| t.name == "web_search")) {
+        tracing::info!("[WebSearch] 请求包含 web_search 工具，将通过 Kiro 原生搜索处理");
     }
 
     // 获取压缩模式
@@ -797,19 +785,8 @@ pub async fn post_messages_cc(
     // 打印 Think 状态标识
     tracing::info!("{} model={}", format_think_tag(&payload.thinking), payload.model);
 
-    // 检查是否为 WebSearch 请求
-    if websearch::has_web_search_tool(&payload) {
-        tracing::info!("检测到 WebSearch 工具，路由到 WebSearch 处理");
-
-        // 估算输入 tokens
-        let input_tokens = token::count_all_tokens(
-            payload.model.clone(),
-            payload.system.clone(),
-            payload.messages.clone(),
-            payload.tools.clone(),
-        ) as i32;
-
-        return websearch::handle_websearch_request(provider, &payload, input_tokens).await;
+    if payload.tools.as_ref().is_some_and(|tools| tools.iter().any(|t| t.name == "web_search")) {
+        tracing::info!("[WebSearch] 请求包含 web_search 工具，将通过 Kiro 原生搜索处理");
     }
 
     // 获取压缩模式

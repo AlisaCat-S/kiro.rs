@@ -115,6 +115,7 @@ impl KiroProvider {
     }
 
     /// 获取凭据级 MCP API URL
+    #[allow(dead_code)]
     fn mcp_url_for(&self, credentials: &KiroCredentials) -> String {
         format!(
             "https://q.{}.amazonaws.com/mcp",
@@ -203,6 +204,7 @@ impl KiroProvider {
     }
 
     /// 构建 MCP 请求头
+    #[allow(dead_code)]
     fn build_mcp_headers(&self, ctx: &CallContext) -> anyhow::Result<HeaderMap> {
         let config = self.token_manager.config();
 
@@ -290,11 +292,13 @@ impl KiroProvider {
     ///
     /// # Returns
     /// 返回原始的 HTTP Response
+    #[allow(dead_code)]
     pub async fn call_mcp(&self, request_body: &str) -> anyhow::Result<reqwest::Response> {
         self.call_mcp_with_retry(request_body).await
     }
 
     /// 内部方法：带重试逻辑的 MCP API 调用
+    #[allow(dead_code)]
     async fn call_mcp_with_retry(&self, request_body: &str) -> anyhow::Result<reqwest::Response> {
         let total_credentials = self.token_manager.total_count();
         let max_retries = (total_credentials * MAX_RETRIES_PER_CREDENTIAL).min(MAX_TOTAL_RETRIES);

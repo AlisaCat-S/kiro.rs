@@ -868,6 +868,15 @@ impl StreamContext {
 
         self.state_manager.set_has_tool_use(true);
 
+        let is_web_search = tool_use.name == "web_search";
+        if is_web_search {
+            tracing::info!(
+                "[WebSearch] 收到搜索事件 tool_use_id={}, stop={}",
+                tool_use.tool_use_id,
+                tool_use.stop
+            );
+        }
+
         // tool_use 必须发生在 thinking 结束之后。
         // 但当 `</thinking>` 后面没有 `\n\n`（例如紧跟 tool_use 或流结束）时，
         // thinking 结束标签会滞留在 thinking_buffer，导致后续 flush 时把 `</thinking>` 当作内容输出。
@@ -931,14 +940,19 @@ impl StreamContext {
         };
 
         // 发送 content_block_start
+        let block_type = if is_web_search {
+            "server_tool_use"
+        } else {
+            "tool_use"
+        };
         let start_events = self.state_manager.handle_content_block_start(
             block_index,
-            "tool_use",
+            block_type,
             json!({
                 "type": "content_block_start",
                 "index": block_index,
                 "content_block": {
-                    "type": "tool_use",
+                    "type": block_type,
                     "id": tool_use.tool_use_id,
                     "name": tool_use.name,
                     "input": {}
@@ -949,7 +963,7 @@ impl StreamContext {
 
         // 发送参数增量 (ToolUseEvent.input 是 String 类型)
         if !tool_use.input.is_empty() {
-            self.output_tokens += (tool_use.input.len() as i32 + 3) / 4; // 估算 token
+            self.output_tokens += (tool_use.input.len() as i32 + 3) / 4;
 
             if let Some(delta_event) = self.state_manager.handle_content_block_delta(
                 block_index,
@@ -971,9 +985,59 @@ impl StreamContext {
             if let Some(stop_event) = self.state_manager.handle_content_block_stop(block_index) {
                 events.push(stop_event);
             }
+
+            if is_web_search {
+                let search_results = Self::parse_web_search_input(&tool_use.input);
+                let result_count = search_results.as_array().map_or(0, |a| a.len());
+
+                tracing::info!("[WebSearch] 搜索完成，共 {} 个结果", result_count);
+
+                if result_count > 0 {
+                    let preview: String = search_results.to_string().chars().take(200).collect();
+                    tracing::debug!("[WebSearch] 搜索结果摘要: {}...", preview);
+                }
+
+                let result_block_index = self.state_manager.next_block_index();
+                let result_start_events = self.state_manager.handle_content_block_start(
+                    result_block_index,
+                    "web_search_tool_result",
+                    json!({
+                        "type": "content_block_start",
+                        "index": result_block_index,
+                        "content_block": {
+                            "type": "web_search_tool_result",
+                            "tool_use_id": tool_use.tool_use_id,
+                            "content": search_results
+                        }
+                    }),
+                );
+                events.extend(result_start_events);
+
+                if let Some(stop_event) = self
+                    .state_manager
+                    .handle_content_block_stop(result_block_index)
+                {
+                    events.push(stop_event);
+                }
+            }
         }
 
         events
+    }
+
+    fn parse_web_search_input(input: &str) -> serde_json::Value {
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(input) {
+            if let Some(results) = parsed.get("search_results") {
+                return results.clone();
+            }
+            if let Some(results) = parsed.get("results") {
+                return results.clone();
+            }
+            if parsed.is_array() {
+                return parsed;
+            }
+        }
+        serde_json::json!([])
     }
 
     /// 生成最终事件序列

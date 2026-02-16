@@ -1,6 +1,9 @@
-//! WebSearch 工具处理模块
+//! WebSearch 工具处理模块（MCP 备用路径）
 //!
-//! 实现 Anthropic WebSearch 请求到 Kiro MCP 的转换和响应生成
+//! 原 MCP 方式的 WebSearch 实现，现已改为通过 Kiro 原生 web_search 工具处理。
+//! 保留此模块作为备用方案。
+
+#![allow(dead_code)]
 
 use std::convert::Infallible;
 

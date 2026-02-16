@@ -9,7 +9,7 @@ use crate::kiro::model::requests::conversation::{
     HistoryUserMessage, KiroImage, Message, UserInputMessage, UserInputMessageContext, UserMessage,
 };
 use crate::kiro::model::requests::tool::{
-    InputSchema, Tool, ToolResult, ToolSpecification, ToolUseEntry,
+    InputSchema, Tool, ToolItem, ToolResult, ToolSpecification, ToolUseEntry, WebSearchTool,
 };
 
 use super::types::{ContentBlock, MessagesRequest};
@@ -220,12 +220,15 @@ pub fn convert_request(
     let history_tool_names = collect_history_tool_names(&history);
     let existing_tool_names: std::collections::HashSet<_> = tools
         .iter()
-        .map(|t| t.tool_specification.name.to_lowercase())
+        .filter_map(|t| match t {
+            ToolItem::Standard(tool) => Some(tool.tool_specification.name.to_lowercase()),
+            ToolItem::WebSearch(_) => None,
+        })
         .collect();
 
     for tool_name in history_tool_names {
         if !existing_tool_names.contains(&tool_name.to_lowercase()) {
-            tools.push(create_placeholder_tool(&tool_name));
+            tools.push(ToolItem::Standard(create_placeholder_tool(&tool_name)));
         }
     }
 
@@ -483,7 +486,7 @@ fn remove_orphaned_tool_uses(
 fn convert_tools(
     tools: &Option<Vec<super::types::Tool>>,
     compression_mode: &str,
-) -> (Vec<Tool>, String, Vec<String>) {
+) -> (Vec<ToolItem>, String, Vec<String>) {
     let Some(tools) = tools else {
         return (Vec::new(), String::new(), Vec::new());
     };
@@ -493,8 +496,26 @@ fn convert_tools(
     }
 
     let mut suffix_injected = Vec::new();
+    let mut web_search_items: Vec<ToolItem> = Vec::new();
 
-    let converted: Vec<Tool> = tools
+    let standard_tools: Vec<&super::types::Tool> = tools
+        .iter()
+        .filter(|t| {
+            let is_web_search = t.name == "web_search"
+                || t.tool_type
+                    .as_ref()
+                    .is_some_and(|tt| tt.contains("web_search"));
+            if is_web_search {
+                tracing::info!("[WebSearch] 检测到 web_search 工具，将作为原生搜索工具发送至 Kiro");
+                web_search_items.push(ToolItem::WebSearch(WebSearchTool::new()));
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
+
+    let converted: Vec<Tool> = standard_tools
         .iter()
         .map(|t| {
             let mut description = t.description.clone();
@@ -509,7 +530,6 @@ fn convert_tools(
                 description.push_str(suffix);
             }
 
-            // 限制描述长度为 10000 字符（安全截断 UTF-8，单次遍历）
             let description = match description.char_indices().nth(10000) {
                 Some((idx, _)) => description[..idx].to_string(),
                 None => description,
@@ -525,7 +545,6 @@ fn convert_tools(
         })
         .collect();
 
-    // 统计命中后缀注入的工具（在闭包外收集，避免借用冲突）
     for t in tools {
         match t.name.as_str() {
             "Write" | "Edit" => suffix_injected.push(t.name.clone()),
@@ -533,21 +552,29 @@ fn convert_tools(
         }
     }
 
-    match compression_mode {
+    let standard_items: Vec<ToolItem> = match compression_mode {
         "elevate" => {
             let (tools, doc) = super::tool_compression::elevate_long_descriptions(&converted);
-            (tools, doc, suffix_injected)
+            let items = tools.into_iter().map(ToolItem::Standard).collect();
+            return ([web_search_items, items].concat(), doc, suffix_injected);
         }
         "hybrid" => {
             let (elevated, doc) = super::tool_compression::elevate_long_descriptions(&converted);
             let compressed = super::tool_compression::compress_tools_if_needed(&elevated);
-            (compressed, doc, suffix_injected)
+            let items = compressed.into_iter().map(ToolItem::Standard).collect();
+            return ([web_search_items, items].concat(), doc, suffix_injected);
         }
         _ => {
             let compressed = super::tool_compression::compress_tools_if_needed(&converted);
-            (compressed, String::new(), suffix_injected)
+            compressed.into_iter().map(ToolItem::Standard).collect()
         }
-    }
+    };
+
+    (
+        [web_search_items, standard_items].concat(),
+        String::new(),
+        suffix_injected,
+    )
 }
 
 /// 生成thinking标签前缀
@@ -979,7 +1006,9 @@ mod tests {
 
         assert!(!tools.is_empty(), "tools 列表不应为空");
         assert!(
-            tools.iter().any(|t| t.tool_specification.name == "read"),
+            tools.iter().any(
+                |t| matches!(t, ToolItem::Standard(tool) if tool.tool_specification.name == "read")
+            ),
             "tools 列表应包含 'read' 工具的占位符定义"
         );
     }
