@@ -670,7 +670,10 @@ fn resolve_thinking(payload: &mut MessagesRequest) -> String {
         None => "None".to_string(),
     };
 
-    if !is_thinking_model {
+    let is_opus_4_6 =
+        model_lower.contains("opus") && (model_lower.contains("4-6") || model_lower.contains("4.6"));
+
+    if !is_thinking_model && !is_opus_4_6 {
         return match &payload.thinking {
             Some(t) if t.is_enabled() => {
                 if t.thinking_type == "adaptive" {
@@ -682,9 +685,6 @@ fn resolve_thinking(payload: &mut MessagesRequest) -> String {
             _ => format!("[Think Off] model={} raw=[{}]", payload.model, client_raw),
         };
     }
-
-    let is_opus_4_6 =
-        model_lower.contains("opus") && (model_lower.contains("4-6") || model_lower.contains("4.6"));
 
     let server_budget = if model_lower.ends_with("-thinking-minimal") {
         512
