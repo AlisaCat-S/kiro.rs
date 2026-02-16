@@ -194,11 +194,20 @@ pub async fn post_messages(
     State(state): State<AppState>,
     JsonExtractor(mut payload): JsonExtractor<MessagesRequest>,
 ) -> Response {
+    let est_tokens = token::count_all_tokens(
+        payload.model.clone(),
+        payload.system.clone(),
+        payload.messages.clone(),
+        payload.tools.clone(),
+    );
+    let req_size = serde_json::to_string(&payload.messages).map(|s| s.len()).unwrap_or(0);
     tracing::info!(
         model = %payload.model,
         max_tokens = %payload.max_tokens,
         stream = %payload.stream,
         message_count = %payload.messages.len(),
+        est_tokens = %est_tokens,
+        req_size = %req_size,
         "Received POST /v1/messages request"
     );
     // 检查 KiroProvider 是否可用
@@ -756,11 +765,20 @@ pub async fn post_messages_cc(
     State(state): State<AppState>,
     JsonExtractor(mut payload): JsonExtractor<MessagesRequest>,
 ) -> Response {
+    let est_tokens = token::count_all_tokens(
+        payload.model.clone(),
+        payload.system.clone(),
+        payload.messages.clone(),
+        payload.tools.clone(),
+    );
+    let req_size = serde_json::to_string(&payload.messages).map(|s| s.len()).unwrap_or(0);
     tracing::info!(
         model = %payload.model,
         max_tokens = %payload.max_tokens,
         stream = %payload.stream,
         message_count = %payload.messages.len(),
+        est_tokens = %est_tokens,
+        req_size = %req_size,
         "Received POST /cc/v1/messages request"
     );
 
