@@ -217,11 +217,8 @@ pub async fn post_messages(
         }
     };
 
-    // 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
-    override_thinking_from_model_name(&mut payload);
-
-    // 打印 Think 状态标识
-    tracing::info!("{} model={}", format_think_tag(&payload.thinking), payload.model);
+    let think_log = resolve_thinking(&mut payload);
+    tracing::info!("{}", think_log);
 
     // 检查是否为 WebSearch 请求
     if websearch::has_web_search_tool(&payload) {
@@ -651,50 +648,32 @@ async fn handle_non_stream_request(
     (StatusCode::OK, Json(response_body)).into_response()
 }
 
-/// 格式化 Think 状态标识
-fn format_think_tag(thinking: &Option<Thinking>) -> String {
-    match thinking {
-        Some(t) if t.is_enabled() => {
-            if t.thinking_type == "adaptive" {
-                "[Think adaptive]".to_string()
-            } else {
-                format!("[Think {}]", t.budget_tokens)
-            }
-        }
-        _ => "[Think Off]".to_string(),
-    }
-}
-
-/// 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
-///
-/// - Opus 4.6：覆写为 adaptive 类型
-/// - 其他模型：覆写为 enabled 类型
-/// - budget_tokens 默认为 20000
-///
-/// 同时支持 thinking level 后缀：
-/// - `-thinking-minimal` → budget 512
-/// - `-thinking-low` → budget 1024
-/// - `-thinking-medium` → budget 8192
-/// - `-thinking-high` → budget 24576
-/// - `-thinking-xhigh` → budget 32768
-/// - `-thinking` → budget 20000（默认）
-fn override_thinking_from_model_name(payload: &mut MessagesRequest) {
+fn resolve_thinking(payload: &mut MessagesRequest) -> String {
     let model_lower = payload.model.to_lowercase();
-    if !model_lower.contains("thinking") {
-        return;
+    let is_thinking_model = model_lower.contains("thinking");
+
+    let client_raw = match &payload.thinking {
+        Some(t) => format!("type={} budget={}", t.thinking_type, t.budget_tokens),
+        None => "None".to_string(),
+    };
+
+    if !is_thinking_model {
+        return match &payload.thinking {
+            Some(t) if t.is_enabled() => {
+                if t.thinking_type == "adaptive" {
+                    format!("[Think adaptive] model={} raw=[{}]", payload.model, client_raw)
+                } else {
+                    format!("[Think {}] model={} raw=[{}]", t.budget_tokens, payload.model, client_raw)
+                }
+            }
+            _ => format!("[Think Off] model={} raw=[{}]", payload.model, client_raw),
+        };
     }
 
     let is_opus_4_6 =
         model_lower.contains("opus") && (model_lower.contains("4-6") || model_lower.contains("4.6"));
 
-    let thinking_type = if is_opus_4_6 {
-        "adaptive"
-    } else {
-        "enabled"
-    };
-
-    // 从模型名后缀解析 thinking level → budget
-    let budget_tokens = if model_lower.ends_with("-thinking-minimal") {
+    let server_budget = if model_lower.ends_with("-thinking-minimal") {
         512
     } else if model_lower.ends_with("-thinking-low") {
         1024
@@ -705,27 +684,57 @@ fn override_thinking_from_model_name(payload: &mut MessagesRequest) {
     } else if model_lower.ends_with("-thinking-xhigh") {
         32768
     } else {
-        // 默认 budget
         20000
     };
 
-    tracing::info!(
-        model = %payload.model,
-        thinking_type = thinking_type,
-        budget_tokens = budget_tokens,
-        "模型名包含 thinking 后缀，覆写 thinking 配置"
-    );
-
-    payload.thinking = Some(Thinking {
-        thinking_type: thinking_type.to_string(),
-        budget_tokens,
-    });
-    
     if is_opus_4_6 {
+        let detail = match &payload.thinking {
+            Some(t) if t.is_enabled() && t.thinking_type == "adaptive" => {
+                "客户端:adaptive 采用".to_string()
+            }
+            Some(t) if t.is_enabled() => format!("客户端:{} 覆盖为adaptive", t.thinking_type),
+            _ => "客户端未开启 注入adaptive".to_string(),
+        };
+
+        payload.thinking = Some(Thinking {
+            thinking_type: "adaptive".to_string(),
+            budget_tokens: server_budget,
+        });
         payload.output_config = Some(OutputConfig {
             effort: "high".to_string(),
         });
+
+        return format!("[Think adaptive] model={} raw=[{}] {}", payload.model, client_raw, detail);
     }
+
+    // 客户端发了 adaptive → 直接采用
+    if let Some(t) = &payload.thinking {
+        if t.is_enabled() && t.thinking_type == "adaptive" {
+            return format!("[Think adaptive] model={} raw=[{}] 客户端:adaptive 采用", payload.model, client_raw);
+        }
+    }
+
+    let (final_budget, detail) = match &payload.thinking {
+        Some(t) if t.is_enabled() => {
+            let client_budget = t.budget_tokens;
+            if client_budget >= server_budget {
+                (client_budget, format!("客户端:{} 采用", client_budget))
+            } else {
+                (
+                    server_budget,
+                    format!("客户端:{} 低于{} 覆盖", client_budget, server_budget),
+                )
+            }
+        }
+        Some(_) | None => (server_budget, "客户端未开启 注入thinking".to_string()),
+    };
+
+    payload.thinking = Some(Thinking {
+        thinking_type: "enabled".to_string(),
+        budget_tokens: final_budget,
+    });
+
+    format!("[Think {}] model={} raw=[{}] {}", final_budget, payload.model, client_raw, detail)
 }
 
 /// POST /v1/messages/count_tokens
@@ -785,11 +794,8 @@ pub async fn post_messages_cc(
         }
     };
 
-    // 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
-    override_thinking_from_model_name(&mut payload);
-
-    // 打印 Think 状态标识
-    tracing::info!("{} model={}", format_think_tag(&payload.thinking), payload.model);
+    let think_log = resolve_thinking(&mut payload);
+    tracing::info!("{}", think_log);
 
     // 检查是否为 WebSearch 请求
     if websearch::has_web_search_tool(&payload) {
