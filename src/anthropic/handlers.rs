@@ -673,7 +673,7 @@ fn resolve_thinking(payload: &mut MessagesRequest) -> String {
     let is_opus_4_6 =
         model_lower.contains("opus") && (model_lower.contains("4-6") || model_lower.contains("4.6"));
 
-    if !is_thinking_model && !is_opus_4_6 {
+    if !is_thinking_model {
         return match &payload.thinking {
             Some(t) if t.is_enabled() => {
                 if t.thinking_type == "adaptive" {
