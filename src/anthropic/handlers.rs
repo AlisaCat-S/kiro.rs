@@ -263,6 +263,10 @@ pub async fn post_messages(
         }
     };
 
+    if !conversion_result.suffix_injected_tools.is_empty() {
+        tracing::info!("[后缀注入:{}]", conversion_result.suffix_injected_tools.join("/"));
+    }
+
     // 构建 Kiro 请求
     let kiro_request = KiroRequest {
         conversation_state: conversion_result.conversation_state,
@@ -686,7 +690,7 @@ fn resolve_thinking(payload: &mut MessagesRequest) -> String {
     } else if is_opus_4_6 {
         24576
     } else {
-        20000
+        8192
     };
 
     // 客户端发了 adaptive → 直接采用
@@ -821,6 +825,10 @@ pub async fn post_messages_cc(
                 .into_response();
         }
     };
+
+    if !conversion_result.suffix_injected_tools.is_empty() {
+        tracing::info!("[后缀注入:{}]", conversion_result.suffix_injected_tools.join("/"));
+    }
 
     // 构建 Kiro 请求
     let kiro_request = KiroRequest {

@@ -87,6 +87,8 @@ pub fn is_agentic_model(model: &str) -> bool {
 pub struct ConversionResult {
     /// 转换后的 Kiro 请求
     pub conversation_state: ConversationState,
+    /// 命中描述后缀注入的工具名列表（如 Write、Edit）
+    pub suffix_injected_tools: Vec<String>,
 }
 
 /// 转换错误
@@ -197,7 +199,8 @@ pub fn convert_request(
     let (text_content, images, tool_results) = process_message_content(&last_message.content)?;
 
     // 6. 转换工具定义
-    let (mut tools, tool_documentation) = convert_tools(&req.tools, compression_mode);
+    let (mut tools, tool_documentation, suffix_injected_tools) =
+        convert_tools(&req.tools, compression_mode);
 
     // 7. 构建历史消息（需要先构建，以便收集历史中使用的工具）
     let mut history = build_history(req, &model_id, &tool_documentation)?;
@@ -257,7 +260,10 @@ pub fn convert_request(
         .with_current_message(current_message)
         .with_history(history);
 
-    Ok(ConversionResult { conversation_state })
+    Ok(ConversionResult {
+        conversation_state,
+        suffix_injected_tools,
+    })
 }
 
 /// 确定聊天触发类型
@@ -477,21 +483,22 @@ fn remove_orphaned_tool_uses(
 fn convert_tools(
     tools: &Option<Vec<super::types::Tool>>,
     compression_mode: &str,
-) -> (Vec<Tool>, String) {
+) -> (Vec<Tool>, String, Vec<String>) {
     let Some(tools) = tools else {
-        return (Vec::new(), String::new());
+        return (Vec::new(), String::new(), Vec::new());
     };
 
     if tools.is_empty() {
-        return (Vec::new(), String::new());
+        return (Vec::new(), String::new(), Vec::new());
     }
+
+    let mut suffix_injected = Vec::new();
 
     let converted: Vec<Tool> = tools
         .iter()
         .map(|t| {
             let mut description = t.description.clone();
 
-            // 对 Write/Edit 工具追加自定义描述后缀
             let suffix = match t.name.as_str() {
                 "Write" => WRITE_TOOL_DESCRIPTION_SUFFIX,
                 "Edit" => EDIT_TOOL_DESCRIPTION_SUFFIX,
@@ -518,16 +525,27 @@ fn convert_tools(
         })
         .collect();
 
+    // 统计命中后缀注入的工具（在闭包外收集，避免借用冲突）
+    for t in tools {
+        match t.name.as_str() {
+            "Write" | "Edit" => suffix_injected.push(t.name.clone()),
+            _ => {}
+        }
+    }
+
     match compression_mode {
-        "elevate" => super::tool_compression::elevate_long_descriptions(&converted),
+        "elevate" => {
+            let (tools, doc) = super::tool_compression::elevate_long_descriptions(&converted);
+            (tools, doc, suffix_injected)
+        }
         "hybrid" => {
             let (elevated, doc) = super::tool_compression::elevate_long_descriptions(&converted);
             let compressed = super::tool_compression::compress_tools_if_needed(&elevated);
-            (compressed, doc)
+            (compressed, doc, suffix_injected)
         }
         _ => {
             let compressed = super::tool_compression::compress_tools_if_needed(&converted);
-            (compressed, String::new())
+            (compressed, String::new(), suffix_injected)
         }
     }
 }
