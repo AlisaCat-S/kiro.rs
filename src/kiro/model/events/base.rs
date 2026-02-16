@@ -8,37 +8,33 @@ use crate::kiro::parser::frame::Frame;
 /// 事件类型枚举
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EventType {
-    /// 助手响应事件
     AssistantResponse,
-    /// 工具使用事件
     ToolUse,
-    /// 计费事件
     Metering,
-    /// 上下文使用率事件
     ContextUsage,
-    /// 未知事件类型
+    SupplementaryWebLinks,
     Unknown,
 }
 
 impl EventType {
-    /// 从事件类型字符串解析
     pub fn from_str(s: &str) -> Self {
         match s {
             "assistantResponseEvent" => Self::AssistantResponse,
             "toolUseEvent" => Self::ToolUse,
             "meteringEvent" => Self::Metering,
             "contextUsageEvent" => Self::ContextUsage,
+            "supplementaryWebLinksEvent" => Self::SupplementaryWebLinks,
             _ => Self::Unknown,
         }
     }
 
-    /// 转换为事件类型字符串
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::AssistantResponse => "assistantResponseEvent",
             Self::ToolUse => "toolUseEvent",
             Self::Metering => "meteringEvent",
             Self::ContextUsage => "contextUsageEvent",
+            Self::SupplementaryWebLinks => "supplementaryWebLinksEvent",
             Self::Unknown => "unknown",
         }
     }
@@ -63,28 +59,18 @@ pub trait EventPayload: Sized {
 /// 封装所有可能的事件类型
 #[derive(Debug, Clone)]
 pub enum Event {
-    /// 助手响应
     AssistantResponse(super::AssistantResponseEvent),
-    /// 工具使用
     ToolUse(super::ToolUseEvent),
-    /// 计费
     Metering(()),
-    /// 上下文使用率
     ContextUsage(super::ContextUsageEvent),
-    /// 未知事件 (保留原始帧数据)
+    SupplementaryWebLinks(super::SupplementaryWebLinksEvent),
     Unknown {},
-    /// 服务端错误
     Error {
-        /// 错误代码
         error_code: String,
-        /// 错误消息
         error_message: String,
     },
-    /// 服务端异常
     Exception {
-        /// 异常类型
         exception_type: String,
-        /// 异常消息
         message: String,
     },
 }
@@ -120,6 +106,10 @@ impl Event {
             EventType::ContextUsage => {
                 let payload = super::ContextUsageEvent::from_frame(&frame)?;
                 Ok(Self::ContextUsage(payload))
+            }
+            EventType::SupplementaryWebLinks => {
+                let payload = super::SupplementaryWebLinksEvent::from_frame(&frame)?;
+                Ok(Self::SupplementaryWebLinks(payload))
             }
             EventType::Unknown => Ok(Self::Unknown {}),
         }
@@ -173,6 +163,10 @@ mod tests {
             EventType::ContextUsage
         );
         assert_eq!(EventType::from_str("unknown_type"), EventType::Unknown);
+        assert_eq!(
+            EventType::from_str("supplementaryWebLinksEvent"),
+            EventType::SupplementaryWebLinks
+        );
     }
 
     #[test]

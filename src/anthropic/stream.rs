@@ -486,6 +486,10 @@ pub struct StreamContext {
     /// 是否需要剥离 thinking 内容开头的换行符
     /// 模型输出 `<thinking>\n` 时，`\n` 可能与标签在同一 chunk 或下一 chunk
     strip_thinking_leading_newline: bool,
+    /// 最近一次 web_search 工具调用的 tool_use_id（用于关联 supplementaryWebLinksEvent）
+    last_web_search_tool_use_id: Option<String>,
+    /// 已发送过 web_search_tool_result 的 tool_use_id 集合（防止重复发送）
+    emitted_web_search_results: std::collections::HashSet<String>,
 }
 
 impl StreamContext {
@@ -510,6 +514,8 @@ impl StreamContext {
             thinking_block_index: None,
             text_block_index: None,
             strip_thinking_leading_newline: false,
+            last_web_search_tool_use_id: None,
+            emitted_web_search_results: std::collections::HashSet::new(),
         }
     }
 
@@ -608,12 +614,14 @@ impl StreamContext {
                 exception_type,
                 message,
             } => {
-                // 处理 ContentLengthExceededException
                 if exception_type == "ContentLengthExceededException" {
                     self.state_manager.set_stop_reason("max_tokens");
                 }
                 tracing::warn!("收到异常事件: {} - {}", exception_type, message);
                 Vec::new()
+            }
+            Event::SupplementaryWebLinks(web_links) => {
+                self.process_supplementary_web_links(web_links)
             }
             _ => Vec::new(),
         }
@@ -870,6 +878,7 @@ impl StreamContext {
 
         let is_web_search = tool_use.name == "web_search";
         if is_web_search {
+            self.last_web_search_tool_use_id = Some(tool_use.tool_use_id.clone());
             tracing::info!(
                 "[WebSearch] 收到搜索事件 tool_use_id={}, stop={}",
                 tool_use.tool_use_id,
@@ -992,35 +1001,135 @@ impl StreamContext {
 
                 tracing::info!("[WebSearch] 搜索完成，共 {} 个结果", result_count);
 
-                if result_count > 0 {
+                if result_count > 0
+                    && !self
+                        .emitted_web_search_results
+                        .contains(&tool_use.tool_use_id)
+                {
+                    self.emitted_web_search_results
+                        .insert(tool_use.tool_use_id.clone());
+
                     let preview: String = search_results.to_string().chars().take(200).collect();
                     tracing::debug!("[WebSearch] 搜索结果摘要: {}...", preview);
-                }
 
-                let result_block_index = self.state_manager.next_block_index();
-                let result_start_events = self.state_manager.handle_content_block_start(
-                    result_block_index,
-                    "web_search_tool_result",
-                    json!({
-                        "type": "content_block_start",
-                        "index": result_block_index,
-                        "content_block": {
-                            "type": "web_search_tool_result",
-                            "tool_use_id": tool_use.tool_use_id,
-                            "content": search_results
-                        }
-                    }),
-                );
-                events.extend(result_start_events);
+                    let result_block_index = self.state_manager.next_block_index();
+                    let result_start_events = self.state_manager.handle_content_block_start(
+                        result_block_index,
+                        "web_search_tool_result",
+                        json!({
+                            "type": "content_block_start",
+                            "index": result_block_index,
+                            "content_block": {
+                                "type": "web_search_tool_result",
+                                "tool_use_id": tool_use.tool_use_id,
+                                "content": search_results
+                            }
+                        }),
+                    );
+                    events.extend(result_start_events);
 
-                if let Some(stop_event) = self
-                    .state_manager
-                    .handle_content_block_stop(result_block_index)
-                {
-                    events.push(stop_event);
+                    if let Some(stop_event) = self
+                        .state_manager
+                        .handle_content_block_stop(result_block_index)
+                    {
+                        events.push(stop_event);
+                    }
                 }
             }
         }
+
+        events
+    }
+
+    fn process_supplementary_web_links(
+        &mut self,
+        web_links: &crate::kiro::model::events::SupplementaryWebLinksEvent,
+    ) -> Vec<SseEvent> {
+        let mut events = Vec::new();
+        let links = &web_links.supplementary_web_links;
+
+        tracing::info!(
+            "[WebSearch] 收到 supplementaryWebLinksEvent，共 {} 个链接",
+            links.len()
+        );
+
+        if links.is_empty() {
+            return events;
+        }
+
+        let tool_use_id = match &self.last_web_search_tool_use_id {
+            Some(id) => id.clone(),
+            None => {
+                tracing::warn!(
+                    "[WebSearch] 收到 supplementaryWebLinksEvent 但无对应的 web_search tool_use_id，生成临时 ID"
+                );
+                format!(
+                    "srvtoolu_{}",
+                    uuid::Uuid::new_v4().to_string().replace('-', "")
+                )
+            }
+        };
+
+        if self.emitted_web_search_results.contains(&tool_use_id) {
+            tracing::debug!(
+                "[WebSearch] tool_use_id={} 已发送过 web_search_tool_result，跳过 supplementaryWebLinksEvent",
+                tool_use_id
+            );
+            return events;
+        }
+        self.emitted_web_search_results.insert(tool_use_id.clone());
+
+        for link in links {
+            tracing::debug!(
+                "[WebSearch] 搜索结果: title={}, url={}",
+                link.title,
+                link.url
+            );
+        }
+
+        let search_results: Vec<serde_json::Value> = links
+            .iter()
+            .map(|link| {
+                let mut result = json!({
+                    "type": "web_search_result",
+                    "url": link.url,
+                    "title": link.title,
+                });
+                if let Some(snippet) = &link.snippet {
+                    result["snippet"] = json!(snippet);
+                }
+                result
+            })
+            .collect();
+
+        let result_block_index = self.state_manager.next_block_index();
+        let result_start_events = self.state_manager.handle_content_block_start(
+            result_block_index,
+            "web_search_tool_result",
+            json!({
+                "type": "content_block_start",
+                "index": result_block_index,
+                "content_block": {
+                    "type": "web_search_tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": search_results
+                }
+            }),
+        );
+        events.extend(result_start_events);
+
+        if let Some(stop_event) = self
+            .state_manager
+            .handle_content_block_stop(result_block_index)
+        {
+            events.push(stop_event);
+        }
+
+        tracing::info!(
+            "[WebSearch] 已生成 web_search_tool_result 块，tool_use_id={}, 结果数={}",
+            tool_use_id,
+            links.len()
+        );
 
         events
     }
