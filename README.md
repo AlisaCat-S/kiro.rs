@@ -36,7 +36,7 @@
 - **负载均衡**: 支持 `priority`（按优先级）和 `balanced`（均衡分配）两种模式
 - **智能重试**: 单凭据最多重试 3 次，单请求最多重试 9 次
 - **凭据回写**: 多凭据格式下自动回写刷新后的 Token
-- **Thinking 模式**: 支持 Claude 的 extended thinking 功能，`-thinking` 后缀自动注入，支持分级预算和 adaptive 模式
+- **Thinking 模式**: 支持 Claude 的 extended thinking 功能
 - **工具调用**: 完整支持 function calling / tool use
 - **WebSearch**: 内置 WebSearch 工具转换逻辑
 - **多模型支持**: 支持 Sonnet、Opus、Haiku 系列模型
@@ -388,11 +388,11 @@ RUST_LOG=debug ./target/release/kiro-rs
 
 ### Thinking 模式
 
-支持 Claude 的 extended thinking 功能。通过模型名添加 `-thinking` 后缀触发：
+支持 Claude 的 extended thinking 功能：
 
 ```json
 {
-  "model": "claude-sonnet-4-20250514-thinking",
+  "model": "claude-sonnet-4-20250514",
   "max_tokens": 16000,
   "thinking": {
     "type": "enabled",
@@ -401,28 +401,6 @@ RUST_LOG=debug ./target/release/kiro-rs
   "messages": [...]
 }
 ```
-
-**Thinking 决策逻辑**：
-
-当模型名包含 `-thinking` 后缀时：
-- 客户端 `budget_tokens` >= 服务端默认值 → 采用客户端值
-- 客户端 `budget_tokens` < 服务端默认值 → 覆盖为服务端默认值
-- 客户端未开启 thinking → 自动注入 enabled 模式，使用服务端默认值
-- 客户端发送 `adaptive` 模式 → 直接采用
-
-当模型名不含 `-thinking` 后缀时，完全尊重客户端配置，不做任何干预。
-
-**服务端默认预算**：
-
-| 模型后缀 | 默认预算 |
-|----------|----------|
-| `-thinking-minimal` | 512 |
-| `-thinking-low` | 1024 |
-| `-thinking-medium` | 8192 |
-| `-thinking-high` | 24,576 |
-| `-thinking-xhigh` | 32,768 |
-| `-thinking`（Opus 4.6） | 24,576 |
-| `-thinking`（其他模型） | 20,000 |
 
 ### 工具调用
 
@@ -455,10 +433,8 @@ RUST_LOG=debug ./target/release/kiro-rs
 |----------------|-----------|
 | `*sonnet*` | `claude-sonnet-4.5` |
 | `*opus*`（含 4.5/4-5） | `claude-opus-4.5` |
-| `*opus*`（其他，如 4.6） | `claude-opus-4.6` |
+| `*opus*`（其他） | `claude-opus-4.6` |
 | `*haiku*` | `claude-haiku-4.5` |
-
-模型名中的 `-thinking` / `-thinking-*` / `-agentic` 后缀会在映射前被剥离，不影响模型匹配。
 
 ## Admin（可选）
 
