@@ -24,7 +24,7 @@ use super::converter::{ConversionError, convert_request};
 use super::middleware::AppState;
 use super::stream::{BufferedStreamContext, SseEvent, StreamContext};
 use super::truncation;
-use super::types::{CountTokensRequest, CountTokensResponse, ErrorResponse, MessagesRequest, Model, ModelsResponse, OutputConfig, Thinking, get_context_window_size};
+use super::types::{CountTokensRequest, CountTokensResponse, ErrorResponse, MessagesRequest, Model, ModelsResponse, Thinking, get_context_window_size};
 use super::websearch;
 
 /// GET /v1/models
@@ -683,29 +683,11 @@ fn resolve_thinking(payload: &mut MessagesRequest) -> String {
         24576
     } else if model_lower.ends_with("-thinking-xhigh") {
         32768
+    } else if is_opus_4_6 {
+        24576
     } else {
         20000
     };
-
-    if is_opus_4_6 {
-        let detail = match &payload.thinking {
-            Some(t) if t.is_enabled() && t.thinking_type == "adaptive" => {
-                "客户端:adaptive 采用".to_string()
-            }
-            Some(t) if t.is_enabled() => format!("客户端:{} 覆盖为adaptive", t.thinking_type),
-            _ => "客户端未开启 注入adaptive".to_string(),
-        };
-
-        payload.thinking = Some(Thinking {
-            thinking_type: "adaptive".to_string(),
-            budget_tokens: server_budget,
-        });
-        payload.output_config = Some(OutputConfig {
-            effort: "high".to_string(),
-        });
-
-        return format!("[Think adaptive] model={} raw=[{}] {}", payload.model, client_raw, detail);
-    }
 
     // 客户端发了 adaptive → 直接采用
     if let Some(t) = &payload.thinking {
