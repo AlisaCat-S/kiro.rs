@@ -1,5 +1,19 @@
 # Changelog
 
+## [v1.0.19] - 2026-02-17
+
+### Changed
+- **自适应压缩策略优化** (`src/anthropic/handlers.rs`)
+  - 请求体大小校验改为以实际序列化后的总字节数为准，不再扣除图片 base64 字节（上游存在约 5MiB 的硬性请求体大小限制，图片也必须计入）
+  - 压缩层级重排：当单条 user content 已超过阈值时优先截断超长消息（第三层），再移除历史消息（第四层），避免移除历史后仍无法降到阈值内
+  - 新增 `has_any_tool_results_or_tools` / `has_any_tool_uses` 预检，跳过无效的 tool 阈值降低迭代
+  - 历史消息移除改为批量 drain（单轮最多 16 条），提升大上下文场景的压缩效率
+- **请求体大小阈值默认上调至 4.5MiB** (`src/model/config.rs`, `config.example.json`)
+  - `compression.maxRequestBodyBytes` 从 400KB 上调至 4,718,592 字节（4.5MiB），匹配上游实际限制
+
+### Fixed
+- **cargo fmt 格式化** (`src/anthropic/converter.rs`, `src/image.rs`)
+
 ## [v1.0.18] - 2026-02-17
 
 ### Added
