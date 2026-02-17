@@ -232,7 +232,7 @@ pub async fn post_messages(
     tracing::info!("{} model={}", format_think_tag(&payload.thinking), payload.model);
 
     if payload.tools.as_ref().is_some_and(|tools| tools.iter().any(|t| t.name == "web_search")) {
-        tracing::info!("[WebSearch] 请求包含 web_search 工具，将通过 Kiro 原生搜索处理");
+        tracing::info!("[WebSearch] 请求包含 web_search 工具，将从 tools 中过滤（Kiro 不支持）");
     }
 
     // 获取压缩模式
@@ -786,7 +786,7 @@ pub async fn post_messages_cc(
     tracing::info!("{} model={}", format_think_tag(&payload.thinking), payload.model);
 
     if payload.tools.as_ref().is_some_and(|tools| tools.iter().any(|t| t.name == "web_search")) {
-        tracing::info!("[WebSearch] 请求包含 web_search 工具，将通过 Kiro 原生搜索处理");
+        tracing::info!("[WebSearch] 请求包含 web_search 工具，将从 tools 中过滤（Kiro 不支持）");
     }
 
     // 获取压缩模式

@@ -73,36 +73,16 @@ pub struct ToolResult {
     pub is_error: bool,
 }
 
-/// 联网搜索工具
-///
-/// Kiro API 支持的特殊工具类型，用于联网搜索
-/// 序列化格式：`{"type": "web_search"}`
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WebSearchTool {
-    #[serde(rename = "type")]
-    pub tool_type: String,
-}
-
-impl WebSearchTool {
-    pub fn new() -> Self {
-        Self {
-            tool_type: "web_search".to_string(),
-        }
-    }
-}
-
 /// 工具项枚举
 ///
-/// 支持两种类型：
-/// - Standard: 标准工具（带 tool_specification）
-/// - WebSearch: 联网搜索工具（仅 type 字段）
+/// 标准工具（带 tool_specification）
+/// 注意：web_search 工具不受 Kiro generateAssistantResponse 端点支持，
+/// 在 converter 层直接过滤掉，不会出现在此枚举中
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ToolItem {
     /// 标准工具定义
     Standard(Tool),
-    /// 联网搜索工具
-    WebSearch(WebSearchTool),
 }
 
 fn is_false(b: &bool) -> bool {

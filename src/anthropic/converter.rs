@@ -9,7 +9,7 @@ use crate::kiro::model::requests::conversation::{
     HistoryUserMessage, KiroImage, Message, UserInputMessage, UserInputMessageContext, UserMessage,
 };
 use crate::kiro::model::requests::tool::{
-    InputSchema, Tool, ToolItem, ToolResult, ToolSpecification, ToolUseEntry, WebSearchTool,
+    InputSchema, Tool, ToolItem, ToolResult, ToolSpecification, ToolUseEntry,
 };
 
 use super::types::{ContentBlock, MessagesRequest};
@@ -222,7 +222,6 @@ pub fn convert_request(
         .iter()
         .filter_map(|t| match t {
             ToolItem::Standard(tool) => Some(tool.tool_specification.name.to_lowercase()),
-            ToolItem::WebSearch(_) => None,
         })
         .collect();
 
@@ -496,8 +495,8 @@ fn convert_tools(
     }
 
     let mut suffix_injected = Vec::new();
-    let mut web_search_items: Vec<ToolItem> = Vec::new();
 
+    // web_search 工具不受 Kiro generateAssistantResponse 端点支持，直接过滤掉
     let standard_tools: Vec<&super::types::Tool> = tools
         .iter()
         .filter(|t| {
@@ -506,8 +505,7 @@ fn convert_tools(
                     .as_ref()
                     .is_some_and(|tt| tt.contains("web_search"));
             if is_web_search {
-                tracing::info!("[WebSearch] 检测到 web_search 工具，将作为原生搜索工具发送至 Kiro");
-                web_search_items.push(ToolItem::WebSearch(WebSearchTool::new()));
+                tracing::info!("[WebSearch] 过滤掉 web_search 工具（Kiro 不支持在 tools 中传递）");
                 false
             } else {
                 true
@@ -556,13 +554,13 @@ fn convert_tools(
         "elevate" => {
             let (tools, doc) = super::tool_compression::elevate_long_descriptions(&converted);
             let items = tools.into_iter().map(ToolItem::Standard).collect();
-            return ([web_search_items, items].concat(), doc, suffix_injected);
+            return (items, doc, suffix_injected);
         }
         "hybrid" => {
             let (elevated, doc) = super::tool_compression::elevate_long_descriptions(&converted);
             let compressed = super::tool_compression::compress_tools_if_needed(&elevated);
             let items = compressed.into_iter().map(ToolItem::Standard).collect();
-            return ([web_search_items, items].concat(), doc, suffix_injected);
+            return (items, doc, suffix_injected);
         }
         _ => {
             let compressed = super::tool_compression::compress_tools_if_needed(&converted);
@@ -571,7 +569,7 @@ fn convert_tools(
     };
 
     (
-        [web_search_items, standard_items].concat(),
+        standard_items,
         String::new(),
         suffix_injected,
     )
@@ -798,10 +796,16 @@ fn convert_assistant_message(
                         }
                         "tool_use" => {
                             if let (Some(id), Some(name)) = (block.id, block.name) {
+                                // 过滤掉 web_search 工具调用（Kiro 不支持）
+                                if name == "web_search" {
+                                    continue;
+                                }
                                 let input = block.input.unwrap_or(serde_json::json!({}));
                                 tool_uses.push(ToolUseEntry::new(id, name).with_input(input));
                             }
                         }
+                        // 跳过 server_tool_use 和 web_search_tool_result（Kiro 原生事件，不应出现在历史中）
+                        "server_tool_use" | "web_search_tool_result" => {}
                         _ => {}
                     }
                 }
