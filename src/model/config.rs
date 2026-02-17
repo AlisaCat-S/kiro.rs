@@ -178,7 +178,7 @@ fn default_400k() -> usize {
 }
 
 fn default_image_max_long_edge() -> u32 {
-    1568
+    4000
 }
 
 fn default_image_max_pixels_single() -> u32 {
@@ -236,7 +236,7 @@ pub struct CompressionConfig {
     /// 历史最大字符数，默认 400000（0=不限）
     #[serde(default = "default_400k")]
     pub max_history_chars: usize,
-    /// 图片长边最大像素，默认 1568（Anthropic 推荐值，超过会缩放）
+    /// 图片长边最大像素，默认 4000（Anthropic 硬限制 8000，留安全余量；窄长图受益于更大长边）
     #[serde(default = "default_image_max_long_edge")]
     pub image_max_long_edge: u32,
     /// 单张图片最大总像素，默认 1_150_000（约 1600 tokens）
