@@ -513,9 +513,11 @@ mod tests {
 
     #[test]
     fn test_machine_id_field_serialization() {
-        let mut creds = KiroCredentials::default();
-        creds.refresh_token = Some("test".to_string());
-        creds.machine_id = Some("b".repeat(64));
+        let creds = KiroCredentials {
+            refresh_token: Some("test".to_string()),
+            machine_id: Some("b".repeat(64)),
+            ..Default::default()
+        };
 
         let json = creds.to_pretty_json().unwrap();
         assert!(json.contains("machineId"));
@@ -523,9 +525,11 @@ mod tests {
 
     #[test]
     fn test_machine_id_field_none_not_serialized() {
-        let mut creds = KiroCredentials::default();
-        creds.refresh_token = Some("test".to_string());
-        creds.machine_id = None;
+        let creds = KiroCredentials {
+            refresh_token: Some("test".to_string()),
+            machine_id: None,
+            ..Default::default()
+        };
 
         let json = creds.to_pretty_json().unwrap();
         assert!(!json.contains("machineId"));
@@ -638,10 +642,12 @@ mod tests {
 
     #[test]
     fn test_auth_api_region_serialization() {
-        let mut creds = KiroCredentials::default();
-        creds.refresh_token = Some("test".to_string());
-        creds.auth_region = Some("eu-west-1".to_string());
-        creds.api_region = Some("us-west-2".to_string());
+        let creds = KiroCredentials {
+            refresh_token: Some("test".to_string()),
+            auth_region: Some("eu-west-1".to_string()),
+            api_region: Some("us-west-2".to_string()),
+            ..Default::default()
+        };
 
         let json = creds.to_pretty_json().unwrap();
         assert!(json.contains("authRegion"));
@@ -652,10 +658,12 @@ mod tests {
 
     #[test]
     fn test_auth_api_region_none_not_serialized() {
-        let mut creds = KiroCredentials::default();
-        creds.refresh_token = Some("test".to_string());
-        creds.auth_region = None;
-        creds.api_region = None;
+        let creds = KiroCredentials {
+            refresh_token: Some("test".to_string()),
+            auth_region: None,
+            api_region: None,
+            ..Default::default()
+        };
 
         let json = creds.to_pretty_json().unwrap();
         assert!(!json.contains("authRegion"));
@@ -664,11 +672,13 @@ mod tests {
 
     #[test]
     fn test_auth_api_region_roundtrip() {
-        let mut original = KiroCredentials::default();
-        original.refresh_token = Some("refresh".to_string());
-        original.region = Some("us-east-1".to_string());
-        original.auth_region = Some("eu-west-1".to_string());
-        original.api_region = Some("ap-northeast-1".to_string());
+        let original = KiroCredentials {
+            refresh_token: Some("refresh".to_string()),
+            region: Some("us-east-1".to_string()),
+            auth_region: Some("eu-west-1".to_string()),
+            api_region: Some("ap-northeast-1".to_string()),
+            ..Default::default()
+        };
 
         let json = original.to_pretty_json().unwrap();
         let parsed = KiroCredentials::from_json(&json).unwrap();
@@ -700,9 +710,11 @@ mod tests {
         config.region = "config-region".to_string();
         config.auth_region = Some("config-auth-region".to_string());
 
-        let mut creds = KiroCredentials::default();
-        creds.region = Some("cred-region".to_string());
-        creds.auth_region = Some("cred-auth-region".to_string());
+        let creds = KiroCredentials {
+            region: Some("cred-region".to_string()),
+            auth_region: Some("cred-auth-region".to_string()),
+            ..Default::default()
+        };
 
         assert_eq!(creds.effective_auth_region(&config), "cred-auth-region");
     }
@@ -713,8 +725,10 @@ mod tests {
         config.region = "config-region".to_string();
         config.auth_region = Some("config-auth-region".to_string());
 
-        let mut creds = KiroCredentials::default();
-        creds.region = Some("cred-region".to_string());
+        let creds = KiroCredentials {
+            region: Some("cred-region".to_string()),
+            ..Default::default()
+        };
         // auth_region 未设置
 
         assert_eq!(creds.effective_auth_region(&config), "cred-region");
@@ -750,8 +764,10 @@ mod tests {
         config.region = "config-region".to_string();
         config.api_region = Some("config-api-region".to_string());
 
-        let mut creds = KiroCredentials::default();
-        creds.api_region = Some("cred-api-region".to_string());
+        let creds = KiroCredentials {
+            api_region: Some("cred-api-region".to_string()),
+            ..Default::default()
+        };
 
         assert_eq!(creds.effective_api_region(&config), "cred-api-region");
     }
@@ -783,8 +799,10 @@ mod tests {
         let mut config = Config::default();
         config.region = "config-region".to_string();
 
-        let mut creds = KiroCredentials::default();
-        creds.region = Some("cred-region".to_string());
+        let creds = KiroCredentials {
+            region: Some("cred-region".to_string()),
+            ..Default::default()
+        };
 
         assert_eq!(creds.effective_api_region(&config), "config-region");
     }
@@ -795,9 +813,11 @@ mod tests {
         let mut config = Config::default();
         config.region = "default".to_string();
 
-        let mut creds = KiroCredentials::default();
-        creds.auth_region = Some("auth-only".to_string());
-        creds.api_region = Some("api-only".to_string());
+        let creds = KiroCredentials {
+            auth_region: Some("auth-only".to_string()),
+            api_region: Some("api-only".to_string()),
+            ..Default::default()
+        };
 
         assert_eq!(creds.effective_auth_region(&config), "auth-only");
         assert_eq!(creds.effective_api_region(&config), "api-only");
@@ -808,8 +828,10 @@ mod tests {
     #[test]
     fn test_effective_proxy_credential_overrides_global() {
         let global = ProxyConfig::new("http://global:8080");
-        let mut creds = KiroCredentials::default();
-        creds.proxy_url = Some("socks5://cred:1080".to_string());
+        let creds = KiroCredentials {
+            proxy_url: Some("socks5://cred:1080".to_string()),
+            ..Default::default()
+        };
 
         let result = creds.effective_proxy(Some(&global));
         assert_eq!(result, Some(ProxyConfig::new("socks5://cred:1080")));
@@ -818,10 +840,12 @@ mod tests {
     #[test]
     fn test_effective_proxy_credential_with_auth() {
         let global = ProxyConfig::new("http://global:8080");
-        let mut creds = KiroCredentials::default();
-        creds.proxy_url = Some("http://proxy:3128".to_string());
-        creds.proxy_username = Some("user".to_string());
-        creds.proxy_password = Some("pass".to_string());
+        let creds = KiroCredentials {
+            proxy_url: Some("http://proxy:3128".to_string()),
+            proxy_username: Some("user".to_string()),
+            proxy_password: Some("pass".to_string()),
+            ..Default::default()
+        };
 
         let result = creds.effective_proxy(Some(&global));
         let expected = ProxyConfig::new("http://proxy:3128").with_auth("user", "pass");
@@ -831,8 +855,10 @@ mod tests {
     #[test]
     fn test_effective_proxy_direct_bypasses_global() {
         let global = ProxyConfig::new("http://global:8080");
-        let mut creds = KiroCredentials::default();
-        creds.proxy_url = Some("direct".to_string());
+        let creds = KiroCredentials {
+            proxy_url: Some("direct".to_string()),
+            ..Default::default()
+        };
 
         let result = creds.effective_proxy(Some(&global));
         assert_eq!(result, None);
@@ -841,8 +867,10 @@ mod tests {
     #[test]
     fn test_effective_proxy_direct_case_insensitive() {
         let global = ProxyConfig::new("http://global:8080");
-        let mut creds = KiroCredentials::default();
-        creds.proxy_url = Some("DIRECT".to_string());
+        let creds = KiroCredentials {
+            proxy_url: Some("DIRECT".to_string()),
+            ..Default::default()
+        };
 
         let result = creds.effective_proxy(Some(&global));
         assert_eq!(result, None);
