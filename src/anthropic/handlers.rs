@@ -387,6 +387,10 @@ pub async fn post_messages(
 
     tracing::debug!("Kiro request body: {}", request_body);
 
+    // 计算并记录 tools 字段长度
+    let tools_len = super::debug_dump::calculate_tools_length(&request_body);
+    tracing::info!("[tools_size] model={} tools_length={} bytes", payload.model, tools_len);
+
     // Bot 模型 debug：保存发送给后端的原始请求
     if is_bot_model(&payload.model) {
         let model_clone = payload.model.clone();
@@ -439,12 +443,21 @@ async fn handle_stream_request(
     let response = match provider.call_api_stream(request_body).await {
         Ok(resp) => resp,
         Err(e) => {
-            tracing::error!("Kiro API 调用失败: {}", e);
+            let error_msg = e.to_string();
+            tracing::error!("Kiro API 调用失败: {}", error_msg);
+            if error_msg.contains("400 Bad Request") {
+                let model_str = model.to_string();
+                let body_str = request_body.to_string();
+                let err_str = error_msg.clone();
+                tokio::spawn(async move {
+                    super::debug_dump::dump_bad_request(&model_str, &body_str, &err_str).await;
+                });
+            }
             return (
                 StatusCode::BAD_GATEWAY,
                 Json(ErrorResponse::new(
                     "api_error",
-                    format!("上游 API 调用失败: {}", e),
+                    format!("上游 API 调用失败: {}", error_msg),
                 )),
             )
                 .into_response();
@@ -961,6 +974,10 @@ pub async fn post_messages_cc(
 
     tracing::debug!("Kiro request body: {}", request_body);
 
+    // 计算并记录 tools 字段长度
+    let tools_len = super::debug_dump::calculate_tools_length(&request_body);
+    tracing::info!("[tools_size] model={} tools_length={} bytes", payload.model, tools_len);
+
     // Bot 模型 debug：保存发送给后端的原始请求
     if is_bot_model(&payload.model) {
         let model_clone = payload.model.clone();
@@ -1016,12 +1033,21 @@ async fn handle_stream_request_buffered(
     let response = match provider.call_api_stream(request_body).await {
         Ok(resp) => resp,
         Err(e) => {
-            tracing::error!("Kiro API 调用失败: {}", e);
+            let error_msg = e.to_string();
+            tracing::error!("Kiro API 调用失败: {}", error_msg);
+            if error_msg.contains("400 Bad Request") {
+                let model_str = model.to_string();
+                let body_str = request_body.to_string();
+                let err_str = error_msg.clone();
+                tokio::spawn(async move {
+                    super::debug_dump::dump_bad_request(&model_str, &body_str, &err_str).await;
+                });
+            }
             return (
                 StatusCode::BAD_GATEWAY,
                 Json(ErrorResponse::new(
                     "api_error",
-                    format!("上游 API 调用失败: {}", e),
+                    format!("上游 API 调用失败: {}", error_msg),
                 )),
             )
                 .into_response();

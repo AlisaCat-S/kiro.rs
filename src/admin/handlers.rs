@@ -3,6 +3,7 @@
 use axum::{
     Json,
     extract::{Path, State},
+    http::StatusCode,
     response::IntoResponse,
 };
 
@@ -141,5 +142,47 @@ pub async fn set_tool_compression_mode(
     match state.service.set_tool_compression_mode(payload) {
         Ok(response) => Json(response).into_response(),
         Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+/// GET /api/admin/config/tools-list
+/// 请求 MCP tools/list 并返回结果
+pub async fn get_tools_list(State(state): State<AdminState>) -> impl IntoResponse {
+    let provider = match &state.kiro_provider {
+        Some(p) => p.clone(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "KiroProvider 未配置"})),
+            )
+                .into_response();
+        }
+    };
+
+    let mcp_request = serde_json::json!({
+        "id": "tools_list",
+        "jsonrpc": "2.0",
+        "method": "tools/list"
+    });
+
+    let request_body = serde_json::to_string(&mcp_request).unwrap();
+
+    match provider.call_mcp(&request_body).await {
+        Ok(response) => match response.text().await {
+            Ok(body) => match serde_json::from_str::<serde_json::Value>(&body) {
+                Ok(json) => Json(json).into_response(),
+                Err(_) => Json(serde_json::json!({"raw": body})).into_response(),
+            },
+            Err(e) => (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({"error": format!("读取响应失败: {}", e)})),
+            )
+                .into_response(),
+        },
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"error": format!("MCP 请求失败: {}", e)})),
+        )
+            .into_response(),
     }
 }

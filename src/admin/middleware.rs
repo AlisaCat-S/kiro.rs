@@ -13,6 +13,7 @@ use axum::{
 use super::service::AdminService;
 use super::types::AdminErrorResponse;
 use crate::common::auth;
+use crate::kiro::provider::KiroProvider;
 
 /// Admin API 共享状态
 #[derive(Clone)]
@@ -21,6 +22,8 @@ pub struct AdminState {
     pub admin_api_key: String,
     /// Admin 服务
     pub service: Arc<AdminService>,
+    /// Kiro API Provider（用于 MCP 调用等）
+    pub kiro_provider: Option<Arc<KiroProvider>>,
 }
 
 impl AdminState {
@@ -28,7 +31,13 @@ impl AdminState {
         Self {
             admin_api_key: admin_api_key.into(),
             service: Arc::new(service),
+            kiro_provider: None,
         }
+    }
+
+    pub fn with_kiro_provider(mut self, provider: Arc<KiroProvider>) -> Self {
+        self.kiro_provider = Some(provider);
+        self
     }
 }
 

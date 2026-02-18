@@ -108,3 +108,10 @@ export async function setToolCompressionMode(mode: 'schema' | 'elevate' | 'hybri
   const { data } = await api.put<{ mode: 'schema' | 'elevate' | 'hybrid' }>('/config/tool-compression', { mode })
   return data
 }
+
+// 获取 MCP tools/list
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function getToolsList(): Promise<any> {
+  const { data } = await api.get('/config/tools-list')
+  return data
+}

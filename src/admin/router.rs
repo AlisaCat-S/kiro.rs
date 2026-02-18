@@ -9,7 +9,7 @@ use axum::{
 use super::{
     handlers::{
         add_credential, delete_credential, get_all_credentials, get_credential_balance,
-        get_load_balancing_mode, get_tool_compression_mode, reset_failure_count,
+        get_load_balancing_mode, get_tool_compression_mode, get_tools_list, reset_failure_count,
         set_credential_disabled, set_credential_priority, set_load_balancing_mode,
         set_tool_compression_mode,
     },
@@ -52,6 +52,7 @@ pub fn create_admin_router(state: AdminState) -> Router {
             "/config/tool-compression",
             get(get_tool_compression_mode).put(set_tool_compression_mode),
         )
+        .route("/config/tools-list", get(get_tools_list))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             admin_auth_middleware,

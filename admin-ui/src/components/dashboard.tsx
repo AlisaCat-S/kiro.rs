@@ -12,8 +12,9 @@ import { AddCredentialDialog } from '@/components/add-credential-dialog'
 import { BatchImportDialog } from '@/components/batch-import-dialog'
 import { BatchVerifyDialog, type VerifyResult } from '@/components/batch-verify-dialog'
 import { CompressionModeDialog } from '@/components/compression-mode-dialog'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { useCredentials, useDeleteCredential, useResetFailure, useLoadBalancingMode, useSetLoadBalancingMode, useToolCompressionMode } from '@/hooks/use-credentials'
-import { getCredentialBalance } from '@/api/credentials'
+import { getCredentialBalance, getToolsList } from '@/api/credentials'
 import { extractErrorMessage } from '@/lib/utils'
 import type { BalanceResponse } from '@/types/api'
 
@@ -32,6 +33,10 @@ export function Dashboard({ onLogout }: DashboardProps) {
   const [verifyProgress, setVerifyProgress] = useState({ current: 0, total: 0 })
   const [verifyResults, setVerifyResults] = useState<Map<number, VerifyResult>>(new Map())
   const [compressionDialogOpen, setCompressionDialogOpen] = useState(false)
+  const [toolsListDialogOpen, setToolsListDialogOpen] = useState(false)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [toolsListData, setToolsListData] = useState<any>(null)
+  const [toolsListLoading, setToolsListLoading] = useState(false)
   const [balanceMap, setBalanceMap] = useState<Map<number, BalanceResponse>>(new Map())
   const [loadingBalanceIds, setLoadingBalanceIds] = useState<Set<number>>(new Set())
   const [queryingInfo, setQueryingInfo] = useState(false)
@@ -504,6 +509,26 @@ export function Dashboard({ onLogout }: DashboardProps) {
             <Button
               variant="outline"
               size="sm"
+              onClick={async () => {
+                setToolsListLoading(true)
+                try {
+                  const result = await getToolsList()
+                  setToolsListData(result)
+                  setToolsListDialogOpen(true)
+                } catch (err) {
+                  toast.error('获取 Tools List 失败: ' + extractErrorMessage(err))
+                } finally {
+                  setToolsListLoading(false)
+                }
+              }}
+              disabled={toolsListLoading}
+              title="查看 MCP Tools List"
+            >
+              {toolsListLoading ? '请求中...' : 'Tools List'}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
               onClick={() => setCompressionDialogOpen(true)}
               disabled={isLoadingCompression}
               title="设置工具压缩模式"
@@ -732,6 +757,20 @@ export function Dashboard({ onLogout }: DashboardProps) {
         open={compressionDialogOpen}
         onOpenChange={setCompressionDialogOpen}
       />
+
+      {/* Tools List 对话框 */}
+      <Dialog open={toolsListDialogOpen} onOpenChange={setToolsListDialogOpen}>
+        <DialogContent className="max-w-3xl max-h-[80vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle>MCP Tools List</DialogTitle>
+          </DialogHeader>
+          <div className="overflow-auto flex-1">
+            <pre className="text-xs bg-muted p-4 rounded-md whitespace-pre-wrap break-all">
+              {toolsListData ? JSON.stringify(toolsListData, null, 2) : '无数据'}
+            </pre>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
