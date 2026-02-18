@@ -20,7 +20,7 @@ use std::time::Duration;
 use tokio::time::interval;
 use uuid::Uuid;
 
-use super::converter::{ConversionError, convert_request};
+use super::converter::{ConversionError, convert_request, is_bot_model};
 use super::middleware::AppState;
 use super::stream::{BufferedStreamContext, SseEvent, StreamContext};
 use super::truncation;
@@ -386,6 +386,15 @@ pub async fn post_messages(
     };
 
     tracing::debug!("Kiro request body: {}", request_body);
+
+    // Bot 模型 debug：保存发送给后端的原始请求
+    if is_bot_model(&payload.model) {
+        let model_clone = payload.model.clone();
+        let body_clone = request_body.clone();
+        tokio::spawn(async move {
+            super::bot_debug::dump_request(&model_clone, &body_clone).await;
+        });
+    }
 
     // 估算输入 tokens
     let input_tokens = token::count_all_tokens(
@@ -951,6 +960,15 @@ pub async fn post_messages_cc(
     };
 
     tracing::debug!("Kiro request body: {}", request_body);
+
+    // Bot 模型 debug：保存发送给后端的原始请求
+    if is_bot_model(&payload.model) {
+        let model_clone = payload.model.clone();
+        let body_clone = request_body.clone();
+        tokio::spawn(async move {
+            super::bot_debug::dump_request(&model_clone, &body_clone).await;
+        });
+    }
 
     // 估算输入 tokens
     let input_tokens = token::count_all_tokens(

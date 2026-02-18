@@ -22,6 +22,7 @@
 //! axum::serve(listener, app).await?;
 //! ```
 
+mod bot_debug;
 mod converter;
 mod handlers;
 mod middleware;
