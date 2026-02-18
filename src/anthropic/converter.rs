@@ -232,6 +232,67 @@ fn create_placeholder_tool(name: &str) -> Tool {
     }
 }
 
+/// 预处理：修补缺失的 tool_use.id 和 tool_result.tool_use_id
+fn patch_tool_ids(messages: &mut [super::types::Message]) {
+    let mut pending_ids: Vec<String> = Vec::new();
+
+    for msg in messages.iter_mut() {
+        if msg.role == "assistant" {
+            if let serde_json::Value::Array(arr) = &mut msg.content {
+                for item in arr.iter_mut() {
+                    if item.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
+                        let id_empty = item
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .map_or(true, |s| s.is_empty());
+                        if id_empty {
+                            let new_id = format!("toolu_{}", Uuid::new_v4());
+                            let tool_name = item.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
+                            tracing::info!("自动补全空 tool_use.id: tool={}, new_id={}", tool_name, new_id);
+                            if let serde_json::Value::Object(obj) = item {
+                                obj.insert(
+                                    "id".to_string(),
+                                    serde_json::Value::String(new_id.clone()),
+                                );
+                            }
+                            pending_ids.push(new_id);
+                        }
+                    }
+                }
+            }
+        } else if msg.role == "user" {
+            if let serde_json::Value::Array(arr) = &mut msg.content {
+                for item in arr.iter_mut() {
+                    if item.get("type").and_then(|v| v.as_str()) == Some("tool_result") {
+                        let id_empty = item
+                            .get("tool_use_id")
+                            .and_then(|v| v.as_str())
+                            .map_or(true, |s| s.is_empty());
+                        if id_empty {
+                            let matched_id = if !pending_ids.is_empty() {
+                                pending_ids.remove(0)
+                            } else {
+                                format!("toolu_{}", Uuid::new_v4())
+                            };
+                            tracing::info!("自动补全空 tool_result.tool_use_id: matched_id={}", matched_id);
+                            if let serde_json::Value::Object(obj) = item {
+                                obj.insert(
+                                    "tool_use_id".to_string(),
+                                    serde_json::Value::String(matched_id),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if !pending_ids.is_empty() {
+        tracing::debug!("patch_tool_ids: {} 个生成的 tool_use id 未被 tool_result 匹配", pending_ids.len());
+    }
+}
+
 /// 将 Anthropic 请求转换为 Kiro 请求
 pub fn convert_request(
     req: &MessagesRequest,
@@ -245,6 +306,10 @@ pub fn convert_request(
     if req.messages.is_empty() {
         return Err(ConversionError::EmptyMessages);
     }
+
+    // 2.5. 预处理：修补缺失的 tool_use.id 和 tool_result.tool_use_id
+    let mut messages = req.messages.clone();
+    patch_tool_ids(&mut messages);
 
     // 3. 生成会话 ID 和代理 ID
     // 优先从 metadata.user_id 中提取 session UUID 作为 conversationId
@@ -260,15 +325,15 @@ pub fn convert_request(
     let chat_trigger_type = determine_chat_trigger_type(req);
 
     // 5. 处理最后一条消息作为 current_message
-    let last_message = req.messages.last().unwrap();
-    let (text_content, images, tool_results) = process_message_content(&last_message.content)?;
+    let last_message = messages.last().unwrap();
+    let (mut text_content, images, tool_results) = process_message_content(&last_message.content)?;
 
     // 6. 转换工具定义
     let (mut tools, tool_documentation, suffix_injected_tools) =
         convert_tools(&req.tools, compression_mode);
 
     // 7. 构建历史消息（需要先构建，以便收集历史中使用的工具）
-    let mut history = build_history(req, &model_id, &tool_documentation)?;
+    let mut history = build_history(req, &messages, &model_id, &tool_documentation)?;
 
     // 8. 验证并过滤 tool_use/tool_result 配对
     // 移除孤立的 tool_result（没有对应的 tool_use）
@@ -278,6 +343,34 @@ pub fn convert_request(
 
     // 9. 从历史中移除孤立的 tool_use（Kiro API 要求 tool_use 必须有对应的 tool_result）
     remove_orphaned_tool_uses(&mut history, &orphaned_tool_use_ids);
+
+    // 9.5. 将被过滤的 tool_result 内容降级为文本，避免信息丢失
+    let orphan_results: Vec<&crate::kiro::model::requests::tool::ToolResult> = tool_results
+        .iter()
+        .filter(|r| {
+            !validated_tool_results
+                .iter()
+                .any(|v| v.tool_use_id == r.tool_use_id)
+        })
+        .collect();
+    if !orphan_results.is_empty() {
+        for r in &orphan_results {
+            for map in &r.content {
+                if let Some(serde_json::Value::String(text)) = map.get("text") {
+                    if !text.is_empty() {
+                        if !text_content.is_empty() {
+                            text_content.push('\n');
+                        }
+                        text_content.push_str(text);
+                    }
+                }
+            }
+        }
+        tracing::info!(
+            "已将 {} 个孤立 tool_result 降级为文本",
+            orphan_results.len()
+        );
+    }
 
     // 10. 收集历史中使用的工具名称，为缺失的工具生成占位符定义
     // Kiro API 要求：历史消息中引用的工具必须在 tools 列表中有定义
@@ -299,13 +392,22 @@ pub fn convert_request(
     if !tools.is_empty() {
         context = context.with_tools(tools);
     }
-    if !validated_tool_results.is_empty() {
+    let has_tool_results = !validated_tool_results.is_empty();
+    if has_tool_results {
         context = context.with_tool_results(validated_tool_results);
     }
 
     // 12. 构建当前消息
     // 保留文本内容，即使有工具结果也不丢弃用户文本
     let content = text_content;
+
+    // 兜底：避免发出空 content 导致上游 400
+    let content = if content.is_empty() && images.is_empty() && !has_tool_results {
+        tracing::info!("currentMessage 内容为空，自动填充 \"OK\" 兜底");
+        "OK".to_string()
+    } else {
+        content
+    };
 
     let mut user_input = UserInputMessage::new(content, &model_id)
         .with_context(context)
@@ -646,6 +748,7 @@ fn has_thinking_tags(content: &str) -> bool {
 /// 构建历史消息
 fn build_history(
     req: &MessagesRequest,
+    messages: &[super::types::Message],
     model_id: &str,
     tool_documentation: &str,
 ) -> Result<Vec<Message>, ConversionError> {
@@ -745,17 +848,16 @@ fn build_history(
 
     // 2. 处理常规消息历史
     // 最后一条消息作为 currentMessage，不加入历史
-    let history_end_index = req.messages.len().saturating_sub(1);
+    let history_end_index = messages.len().saturating_sub(1);
 
     // 如果最后一条是 assistant，则包含在历史中
-    let last_is_assistant = req
-        .messages
+    let last_is_assistant = messages
         .last()
         .map(|m| m.role == "assistant")
         .unwrap_or(false);
 
     let history_end_index = if last_is_assistant {
-        req.messages.len()
+        messages.len()
     } else {
         history_end_index
     };
@@ -764,7 +866,7 @@ fn build_history(
     let mut user_buffer: Vec<&super::types::Message> = Vec::new();
 
     for i in 0..history_end_index {
-        let msg = &req.messages[i];
+        let msg = &messages[i];
 
         if msg.role == "user" {
             user_buffer.push(msg);

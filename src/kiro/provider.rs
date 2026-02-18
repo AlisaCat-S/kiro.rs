@@ -130,6 +130,22 @@ impl KiroProvider {
         )
     }
 
+    /// 获取凭据级 fallback API URL（codewhisperer 端点）
+    fn fallback_url_for(&self, credentials: &KiroCredentials) -> String {
+        format!(
+            "https://codewhisperer.{}.amazonaws.com/generateAssistantResponse",
+            credentials.effective_api_region(self.token_manager.config())
+        )
+    }
+
+    /// 获取凭据级 fallback API 域名
+    fn fallback_domain_for(&self, credentials: &KiroCredentials) -> String {
+        format!(
+            "codewhisperer.{}.amazonaws.com",
+            credentials.effective_api_region(self.token_manager.config())
+        )
+    }
+
     /// 从请求体中提取模型信息
     ///
     /// 尝试解析 JSON 请求体，提取 conversationState.currentMessage.userInputMessage.modelId
@@ -471,6 +487,37 @@ impl KiroProvider {
                     );
                     // 网络错误通常是上游/链路瞬态问题，不应导致"禁用凭据"或"切换凭据"
                     // （否则一段时间网络抖动会把所有凭据都误禁用，需要重启才能恢复）
+
+                    // 尝试 fallback 端点（codewhisperer.*）
+                    let fallback_url = self.fallback_url_for(&ctx.credentials);
+                    tracing::info!("主端点网络错误，尝试 fallback 端点: {}", fallback_url);
+                    if let Ok(mut fallback_headers) = self.build_headers(&ctx) {
+                        if let Ok(host_val) = HeaderValue::from_str(&self.fallback_domain_for(&ctx.credentials)) {
+                            fallback_headers.insert(HOST, host_val);
+                            if let Ok(client) = self.client_for(&ctx.credentials) {
+                                match client
+                                    .post(&fallback_url)
+                                    .headers(fallback_headers)
+                                    .body(request_body.to_string())
+                                    .send()
+                                    .await
+                                {
+                                    Ok(resp) if resp.status().is_success() => {
+                                        tracing::info!("Fallback 端点请求成功: {}", fallback_url);
+                                        self.token_manager.report_success(ctx.id);
+                                        return Ok(resp);
+                                    }
+                                    Ok(resp) => {
+                                        tracing::warn!("Fallback 端点也失败: {}", resp.status());
+                                    }
+                                    Err(fallback_err) => {
+                                        tracing::warn!("Fallback 端点请求失败: {}", fallback_err);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     last_error = Some(e.into());
                     if attempt + 1 < max_retries {
                         sleep(Self::retry_delay(attempt)).await;
