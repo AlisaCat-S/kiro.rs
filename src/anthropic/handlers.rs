@@ -90,6 +90,9 @@ pub async fn get_models() -> impl IntoResponse {
             display_name: "Claude Sonnet 4.6".to_string(),
             model_type: "chat".to_string(),
             max_tokens: 32000,
+            context_length: Some(200_000),
+            max_completion_tokens: Some(64_000),
+            thinking: Some(true),
         },
         Model {
             id: "claude-sonnet-4-6-thinking".to_string(),
@@ -99,6 +102,9 @@ pub async fn get_models() -> impl IntoResponse {
             display_name: "Claude Sonnet 4.6 (Thinking)".to_string(),
             model_type: "chat".to_string(),
             max_tokens: 32000,
+            context_length: Some(200_000),
+            max_completion_tokens: Some(64_000),
+            thinking: Some(true),
         },
         Model {
             id: "claude-opus-4-6".to_string(),
