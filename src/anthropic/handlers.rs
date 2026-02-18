@@ -1165,7 +1165,7 @@ fn override_thinking_from_model_name(payload: &mut MessagesRequest) {
     let is_opus_or_sonnet_4_6 = (model_lower.contains("opus") || model_lower.contains("sonnet"))
         && (model_lower.contains("4-6") || model_lower.contains("4.6"));
 
-    let thinking_type = if is_opus_4_6 { "adaptive" } else { "enabled" };
+    let thinking_type = if is_opus_or_sonnet_4_6 { "adaptive" } else { "enabled" };
 
     tracing::info!(
         model = %payload.model,
