@@ -171,7 +171,7 @@ pub fn create_mcp_request(query: &str) -> (String, McpRequest) {
         jsonrpc: "2.0".to_string(),
         method: "tools/call".to_string(),
         params: McpParams {
-            name: "web_search".to_string(),
+            name: "search".to_string(),
             arguments: McpArguments {
                 query: query.to_string(),
             },
@@ -629,7 +629,7 @@ mod tests {
         assert!(tool_use_id.starts_with("srvtoolu_"));
         assert_eq!(request.jsonrpc, "2.0");
         assert_eq!(request.method, "tools/call");
-        assert_eq!(request.params.name, "web_search");
+        assert_eq!(request.params.name, "search");
         assert_eq!(request.params.arguments.query, "test query");
 
         // 验证 ID 格式: web_search_tooluse_{22位}_{时间戳}_{8位}
