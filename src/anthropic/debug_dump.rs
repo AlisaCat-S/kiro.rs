@@ -127,6 +127,46 @@ pub struct RequestStats {
     pub total_tokens: u64,
 }
 
+impl RequestStats {
+    /// 格式化字节数为人类可读单位
+    fn format_bytes(bytes: usize) -> String {
+        if bytes < 1024 {
+            format!("{} B", bytes)
+        } else if bytes < 1024 * 1024 {
+            format!("{:.2} KB", bytes as f64 / 1024.0)
+        } else {
+            format!("{:.2} MB", bytes as f64 / 1024.0 / 1024.0)
+        }
+    }
+
+    /// 格式化 token 数为人类可读格式
+    fn format_tokens(tokens: u64) -> String {
+        if tokens < 1000 {
+            format!("{} tok", tokens)
+        } else if tokens < 1_000_000 {
+            format!("{:.2}K tok", tokens as f64 / 1000.0)
+        } else {
+            format!("{:.2}M tok", tokens as f64 / 1_000_000.0)
+        }
+    }
+
+    /// 生成格式化的日志字符串
+    pub fn format_log(&self, model: &str) -> String {
+        format!(
+            "[request_stats] model={} | system: {} / {} | messages: {} / {} | tools: {} / {} | total: {} / {}",
+            model,
+            Self::format_bytes(self.system_bytes),
+            Self::format_tokens(self.system_tokens),
+            Self::format_bytes(self.messages_bytes),
+            Self::format_tokens(self.messages_tokens),
+            Self::format_bytes(self.tools_bytes),
+            Self::format_tokens(self.tools_tokens),
+            Self::format_bytes(self.total_bytes),
+            Self::format_tokens(self.total_tokens)
+        )
+    }
+}
+
 /// 分析 Kiro 请求体各部分的大小和 token 数
 pub fn analyze_request_parts(request_body: &str) -> Option<RequestStats> {
     let v = serde_json::from_str::<serde_json::Value>(request_body).ok()?;

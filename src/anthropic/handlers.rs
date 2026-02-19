@@ -389,14 +389,7 @@ pub async fn post_messages(
 
     // 分析并记录请求各部分的大小和 token 数
     if let Some(stats) = super::debug_dump::analyze_request_parts(&request_body) {
-        tracing::info!(
-            "[request_stats] model={} | system: {}B/{}tok | messages: {}B/{}tok | tools: {}B/{}tok | total: {}B/{}tok",
-            payload.model,
-            stats.system_bytes, stats.system_tokens,
-            stats.messages_bytes, stats.messages_tokens,
-            stats.tools_bytes, stats.tools_tokens,
-            stats.total_bytes, stats.total_tokens
-        );
+        tracing::info!("{}", stats.format_log(&payload.model));
     }
 
     // Bot 模型 debug：保存发送给后端的原始请求
@@ -992,14 +985,7 @@ pub async fn post_messages_cc(
 
     // 分析并记录请求各部分的大小和 token 数
     if let Some(stats) = super::debug_dump::analyze_request_parts(&request_body) {
-        tracing::info!(
-            "[request_stats] model={} | system: {}B/{}tok | messages: {}B/{}tok | tools: {}B/{}tok | total: {}B/{}tok",
-            payload.model,
-            stats.system_bytes, stats.system_tokens,
-            stats.messages_bytes, stats.messages_tokens,
-            stats.tools_bytes, stats.tools_tokens,
-            stats.total_bytes, stats.total_tokens
-        );
+        tracing::info!("{}", stats.format_log(&payload.model));
     }
 
     // Bot 模型 debug：保存发送给后端的原始请求
