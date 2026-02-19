@@ -24,7 +24,7 @@
 
 mod bot_debug;
 mod converter;
-mod debug_dump;
+pub mod debug_dump;
 mod handlers;
 mod middleware;
 mod router;

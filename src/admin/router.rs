@@ -9,9 +9,9 @@ use axum::{
 use super::{
     handlers::{
         add_credential, delete_credential, get_all_credentials, get_credential_balance,
-        get_load_balancing_mode, get_tool_compression_mode, get_tools_list, reset_failure_count,
-        set_credential_disabled, set_credential_priority, set_load_balancing_mode,
-        set_tool_compression_mode,
+        get_debug_mode, get_load_balancing_mode, get_tool_compression_mode, get_tools_list,
+        reset_failure_count, set_credential_disabled, set_credential_priority, set_debug_mode,
+        set_load_balancing_mode, set_tool_compression_mode,
     },
     middleware::{admin_auth_middleware, AdminState},
 };
@@ -53,6 +53,10 @@ pub fn create_admin_router(state: AdminState) -> Router {
             get(get_tool_compression_mode).put(set_tool_compression_mode),
         )
         .route("/config/tools-list", get(get_tools_list))
+        .route(
+            "/config/debug-mode",
+            get(get_debug_mode).put(set_debug_mode),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             admin_auth_middleware,

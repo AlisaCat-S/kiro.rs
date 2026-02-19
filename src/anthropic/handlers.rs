@@ -441,7 +441,15 @@ async fn handle_stream_request(
 ) -> Response {
     // 调用 Kiro API（支持多凭据故障转移）
     let response = match provider.call_api_stream(request_body).await {
-        Ok(resp) => resp,
+        Ok(resp) => {
+            // 成功时保存请求（如果 Debug 开关打开）
+            let model_str = model.to_string();
+            let body_str = request_body.to_string();
+            tokio::spawn(async move {
+                super::debug_dump::dump_ok_request(&model_str, &body_str).await;
+            });
+            resp
+        }
         Err(e) => {
             let error_msg = e.to_string();
             tracing::error!("Kiro API 调用失败: {}", error_msg);
@@ -1031,7 +1039,15 @@ async fn handle_stream_request_buffered(
 ) -> Response {
     // 调用 Kiro API（支持多凭据故障转移）
     let response = match provider.call_api_stream(request_body).await {
-        Ok(resp) => resp,
+        Ok(resp) => {
+            // 成功时保存请求（如果 Debug 开关打开）
+            let model_str = model.to_string();
+            let body_str = request_body.to_string();
+            tokio::spawn(async move {
+                super::debug_dump::dump_ok_request(&model_str, &body_str).await;
+            });
+            resp
+        }
         Err(e) => {
             let error_msg = e.to_string();
             tracing::error!("Kiro API 调用失败: {}", error_msg);

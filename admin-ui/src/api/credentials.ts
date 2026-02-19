@@ -115,3 +115,15 @@ export async function getToolsList(): Promise<any> {
   const { data } = await api.get('/config/tools-list')
   return data
 }
+
+// 获取 Debug 模式状态
+export async function getDebugMode(): Promise<{ enabled: boolean }> {
+  const { data } = await api.get<{ enabled: boolean }>('/config/debug-mode')
+  return data
+}
+
+// 设置 Debug 模式状态
+export async function setDebugMode(enabled: boolean): Promise<{ enabled: boolean }> {
+  const { data } = await api.put<{ enabled: boolean }>('/config/debug-mode', { enabled })
+  return data
+}

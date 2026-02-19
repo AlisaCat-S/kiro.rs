@@ -186,3 +186,25 @@ pub async fn get_tools_list(State(state): State<AdminState>) -> impl IntoRespons
             .into_response(),
     }
 }
+
+/// GET /api/admin/config/debug-mode
+/// 获取 Debug 开关状态
+pub async fn get_debug_mode() -> impl IntoResponse {
+    let enabled = crate::anthropic::debug_dump::is_debug_enabled();
+    Json(serde_json::json!({"enabled": enabled})).into_response()
+}
+
+/// PUT /api/admin/config/debug-mode
+/// 设置 Debug 开关状态
+pub async fn set_debug_mode(
+    Json(payload): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let enabled = payload
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    crate::anthropic::debug_dump::set_debug_enabled(enabled);
+
+    Json(serde_json::json!({"enabled": enabled})).into_response()
+}
