@@ -387,9 +387,17 @@ pub async fn post_messages(
 
     tracing::debug!("Kiro request body: {}", request_body);
 
-    // 计算并记录 tools 字段长度
-    let tools_len = super::debug_dump::calculate_tools_length(&request_body);
-    tracing::info!("[tools_size] model={} tools_length={} bytes", payload.model, tools_len);
+    // 分析并记录请求各部分的大小和 token 数
+    if let Some(stats) = super::debug_dump::analyze_request_parts(&request_body) {
+        tracing::info!(
+            "[request_stats] model={} | system: {}B/{}tok | messages: {}B/{}tok | tools: {}B/{}tok | total: {}B/{}tok",
+            payload.model,
+            stats.system_bytes, stats.system_tokens,
+            stats.messages_bytes, stats.messages_tokens,
+            stats.tools_bytes, stats.tools_tokens,
+            stats.total_bytes, stats.total_tokens
+        );
+    }
 
     // Bot 模型 debug：保存发送给后端的原始请求
     if is_bot_model(&payload.model) {
@@ -982,9 +990,17 @@ pub async fn post_messages_cc(
 
     tracing::debug!("Kiro request body: {}", request_body);
 
-    // 计算并记录 tools 字段长度
-    let tools_len = super::debug_dump::calculate_tools_length(&request_body);
-    tracing::info!("[tools_size] model={} tools_length={} bytes", payload.model, tools_len);
+    // 分析并记录请求各部分的大小和 token 数
+    if let Some(stats) = super::debug_dump::analyze_request_parts(&request_body) {
+        tracing::info!(
+            "[request_stats] model={} | system: {}B/{}tok | messages: {}B/{}tok | tools: {}B/{}tok | total: {}B/{}tok",
+            payload.model,
+            stats.system_bytes, stats.system_tokens,
+            stats.messages_bytes, stats.messages_tokens,
+            stats.tools_bytes, stats.tools_tokens,
+            stats.total_bytes, stats.total_tokens
+        );
+    }
 
     // Bot 模型 debug：保存发送给后端的原始请求
     if is_bot_model(&payload.model) {

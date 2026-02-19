@@ -113,3 +113,83 @@ pub async fn dump_ok_request(model: &str, request_body: &str) {
         Err(e) => tracing::warn!("[debug_dump] 保存失败: {} - {}", filename, e),
     }
 }
+
+/// 请求各部分的统计信息
+#[derive(Debug)]
+pub struct RequestStats {
+    pub system_bytes: usize,
+    pub system_tokens: u64,
+    pub messages_bytes: usize,
+    pub messages_tokens: u64,
+    pub tools_bytes: usize,
+    pub tools_tokens: u64,
+    pub total_bytes: usize,
+    pub total_tokens: u64,
+}
+
+/// 分析 Kiro 请求体各部分的大小和 token 数
+pub fn analyze_request_parts(request_body: &str) -> Option<RequestStats> {
+    let v = serde_json::from_str::<serde_json::Value>(request_body).ok()?;
+
+    // 提取各部分
+    let conversation_state = v.get("conversationState")?;
+    let current_message = conversation_state.get("currentMessage")?;
+    let user_input_message = current_message.get("userInputMessage")?;
+    let context = user_input_message.get("userInputMessageContext")?;
+
+    // 1. System prompt
+    let system_bytes = context
+        .get("systemPrompt")
+        .and_then(|sp| serde_json::to_string(sp).ok())
+        .map(|s| s.len())
+        .unwrap_or(0);
+    let system_text = context
+        .get("systemPrompt")
+        .and_then(|sp| sp.as_str())
+        .unwrap_or("");
+    let system_tokens = crate::token::count_tokens(system_text);
+
+    // 2. Messages (conversationHistory)
+    let messages_bytes = conversation_state
+        .get("conversationHistory")
+        .and_then(|ch| serde_json::to_string(ch).ok())
+        .map(|s| s.len())
+        .unwrap_or(0);
+    let messages_tokens = conversation_state
+        .get("conversationHistory")
+        .and_then(|ch| ch.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|msg| msg.get("text").and_then(|t| t.as_str()))
+                .map(|text| crate::token::count_tokens(text))
+                .sum()
+        })
+        .unwrap_or(0);
+
+    // 3. Tools
+    let tools_bytes = context
+        .get("tools")
+        .and_then(|t| serde_json::to_string(t).ok())
+        .map(|s| s.len())
+        .unwrap_or(0);
+    let tools_tokens = context
+        .get("tools")
+        .and_then(|t| serde_json::to_string(t).ok())
+        .map(|json_str| crate::token::count_tokens(&json_str))
+        .unwrap_or(0);
+
+    // 总计
+    let total_bytes = request_body.len();
+    let total_tokens = system_tokens + messages_tokens + tools_tokens;
+
+    Some(RequestStats {
+        system_bytes,
+        system_tokens,
+        messages_bytes,
+        messages_tokens,
+        tools_bytes,
+        tools_tokens,
+        total_bytes,
+        total_tokens,
+    })
+}
