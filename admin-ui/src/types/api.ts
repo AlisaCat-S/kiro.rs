@@ -16,6 +16,7 @@ export interface CredentialStatusItem {
   hasProfileArn: boolean
   accountEmail: string | null
   email?: string
+  subscriptionTitle: string | null
   refreshTokenHash?: string
 
   // ===== 统计（可持久化） =====

@@ -234,11 +234,7 @@ export function CredentialCard({
             </div>
             <div>
               <span className="text-muted-foreground">订阅等级：</span>
-              <span className="font-medium">
-                {loadingBalance ? (
-                  <Loader2 className="inline w-3 h-3 animate-spin" />
-                ) : balance?.subscriptionTitle || '未知'}
-              </span>
+              <span className="font-medium">{credential.subscriptionTitle || 'KIRO FREE'}</span>
             </div>
             <div>
               <span className="text-muted-foreground">成功次数：</span>

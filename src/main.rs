@@ -123,6 +123,7 @@ async fn main() {
     let anthropic_app = anthropic::create_router_with_provider(
         &api_key,
         Some(kiro_provider),
+        Some(token_manager.clone()),
         first_credentials.profile_arn.clone(),
         config.compression.clone(),
     );

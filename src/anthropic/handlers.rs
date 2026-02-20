@@ -374,13 +374,21 @@ fn mask_user_id(user_id: Option<&str>) -> String {
     }
 }
 
+/// 判断模型是否需要 KIRO POWER 订阅
+///
+/// 4.6 系列和 Opus 系列需要 KIRO POWER
+fn is_power_only_model(model: &str) -> bool {
+    let m = model.to_ascii_lowercase();
+    m.contains("4-6") || m.contains("4.6") || m.contains("opus")
+}
+
 /// GET /v1/models
 ///
 /// 返回可用的模型列表
-pub async fn get_models() -> impl IntoResponse {
+pub async fn get_models(State(state): State<AppState>) -> impl IntoResponse {
     tracing::info!("Received GET /v1/models request");
 
-    let models = vec![
+    let mut models = vec![
         Model {
             id: "claude-sonnet-4-6".to_string(),
             object: "model".to_string(),
@@ -563,6 +571,15 @@ pub async fn get_models() -> impl IntoResponse {
         },
     ];
 
+    let has_power = state
+        .token_manager
+        .as_ref()
+        .is_some_and(|m| m.has_power_subscription());
+
+    if !has_power {
+        models.retain(|m| !is_power_only_model(&m.id));
+    }
+
     Json(ModelsResponse {
         object: "list".to_string(),
         data: models,
@@ -576,6 +593,31 @@ pub async fn post_messages(
     State(state): State<AppState>,
     JsonExtractor(mut payload): JsonExtractor<MessagesRequest>,
 ) -> Response {
+    // 检查模型是否需要 KIRO POWER 订阅
+    if is_power_only_model(&payload.model) {
+        let has_power = state
+            .token_manager
+            .as_ref()
+            .is_some_and(|m| m.has_power_subscription());
+        if !has_power {
+            tracing::warn!(
+                model = %payload.model,
+                "请求被拒绝：模型需要 KIRO POWER 订阅"
+            );
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse::new(
+                    "permission_error",
+                    format!(
+                        "Model {} requires KIRO POWER subscription. No KIRO POWER credentials available.",
+                        payload.model
+                    ),
+                )),
+            )
+                .into_response();
+        }
+    }
+
     // 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
     override_thinking_from_model_name(&mut payload);
 
@@ -1219,6 +1261,31 @@ pub async fn post_messages_cc(
     State(state): State<AppState>,
     JsonExtractor(mut payload): JsonExtractor<MessagesRequest>,
 ) -> Response {
+    // 检查模型是否需要 KIRO POWER 订阅
+    if is_power_only_model(&payload.model) {
+        let has_power = state
+            .token_manager
+            .as_ref()
+            .is_some_and(|m| m.has_power_subscription());
+        if !has_power {
+            tracing::warn!(
+                model = %payload.model,
+                "请求被拒绝：模型需要 KIRO POWER 订阅"
+            );
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse::new(
+                    "permission_error",
+                    format!(
+                        "Model {} requires KIRO POWER subscription. No KIRO POWER credentials available.",
+                        payload.model
+                    ),
+                )),
+            )
+                .into_response();
+        }
+    }
+
     // 检查 KiroProvider 是否可用
     let provider = match &state.kiro_provider {
         Some(p) => p.clone(),

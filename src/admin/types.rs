@@ -38,6 +38,8 @@ pub struct CredentialStatusItem {
     pub refresh_token_hash: Option<String>,
     /// 用户邮箱（用于前端显示）
     pub email: Option<String>,
+    /// 订阅等级（KIRO POWER / KIRO FREE 等）
+    pub subscription_title: Option<String>,
     /// API 调用成功次数
     pub success_count: u64,
     /// 最后一次 API 调用时间（RFC3339 格式）

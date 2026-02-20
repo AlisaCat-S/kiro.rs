@@ -558,6 +558,8 @@ pub struct CredentialEntrySnapshot {
     pub refresh_token_hash: Option<String>,
     /// 用户邮箱（用于前端显示）
     pub email: Option<String>,
+    /// 订阅等级（KIRO POWER / KIRO FREE 等）
+    pub subscription_title: Option<String>,
     /// API 调用成功次数
     pub success_count: u64,
     /// 最后一次 API 调用时间（RFC3339 格式）
@@ -2061,6 +2063,7 @@ impl MultiTokenManager {
         tracing::info!("正在初始化 {} 个凭据的余额...", credential_ids.len());
 
         let mut success_count = 0;
+        let mut subscription_updated = false;
 
         // 顺序查询每个凭据的余额，间隔 0.5 秒避免触发限流
         for (index, &id) in credential_ids.iter().enumerate() {
@@ -2072,6 +2075,23 @@ impl MultiTokenManager {
                     let remaining = (limit - used).max(0.0);
 
                     self.update_balance_cache(id, remaining);
+
+                    // 提取订阅等级（仅当凭据尚未持久化订阅等级时写入）
+                    if let Some(title) = limits.subscription_title() {
+                        let mut entries = self.entries.lock();
+                        if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
+                            if entry.credentials.subscription_title.is_none() {
+                                entry.credentials.subscription_title =
+                                    Some(title.to_string());
+                                subscription_updated = true;
+                                tracing::info!(
+                                    "凭据 #{} 订阅等级: {}",
+                                    id,
+                                    title
+                                );
+                            }
+                        }
+                    }
 
                     // 余额小于 1 时自动禁用凭据
                     if remaining < 1.0 {
@@ -2094,6 +2114,13 @@ impl MultiTokenManager {
             // 非最后一个凭据时，间隔 0.5 秒
             if index < credential_ids.len() - 1 {
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+        }
+
+        // 如果有订阅等级更新，持久化到文件
+        if subscription_updated {
+            if let Err(e) = self.persist_credentials() {
+                tracing::warn!("订阅等级持久化失败: {}", e);
             }
         }
 
@@ -2143,6 +2170,7 @@ impl MultiTokenManager {
                         expires_at: e.credentials.expires_at.clone(),
                         refresh_token_hash: hash,
                         email: e.credentials.email.clone(),
+                        subscription_title: e.credentials.subscription_title.clone(),
                         success_count: e.success_count,
                         last_used_at: e.last_used_at.clone(),
                     }
@@ -2151,6 +2179,18 @@ impl MultiTokenManager {
             total: entries.len(),
             available,
         }
+    }
+
+    /// 是否存在启用的 KIRO POWER 订阅凭据
+    pub fn has_power_subscription(&self) -> bool {
+        let entries = self.entries.lock();
+        entries.iter().any(|e| {
+            !e.disabled
+                && e.credentials
+                    .subscription_title
+                    .as_deref()
+                    .is_some_and(|t| t.to_ascii_uppercase().contains("POWER"))
+        })
     }
 
     /// 设置凭据禁用状态（Admin API）
@@ -2368,6 +2408,25 @@ impl MultiTokenManager {
 
         // 6. 持久化
         self.persist_credentials()?;
+
+        // 7. 获取订阅等级并持久化
+        match self.get_usage_limits_for(new_id).await {
+            Ok(limits) => {
+                if let Some(title) = limits.subscription_title() {
+                    let mut entries = self.entries.lock();
+                    if let Some(entry) = entries.iter_mut().find(|e| e.id == new_id) {
+                        entry.credentials.subscription_title = Some(title.to_string());
+                    }
+                    drop(entries);
+                    if let Err(e) = self.persist_credentials() {
+                        tracing::warn!("新凭据订阅等级持久化失败: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("获取新凭据 #{} 订阅等级失败: {}", new_id, e);
+            }
+        }
 
         tracing::info!("成功添加凭据 #{}", new_id);
         Ok(new_id)

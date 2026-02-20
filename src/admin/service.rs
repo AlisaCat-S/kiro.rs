@@ -73,6 +73,7 @@ impl AdminService {
                 has_profile_arn: entry.has_profile_arn,
                 refresh_token_hash: entry.refresh_token_hash,
                 email: entry.email,
+                subscription_title: entry.subscription_title,
                 success_count: entry.success_count,
                 last_used_at: entry.last_used_at.clone(),
             })

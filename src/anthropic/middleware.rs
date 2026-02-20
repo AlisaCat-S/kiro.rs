@@ -12,6 +12,7 @@ use axum::{
 
 use crate::common::auth;
 use crate::kiro::provider::KiroProvider;
+use crate::kiro::token_manager::MultiTokenManager;
 use crate::model::config::CompressionConfig;
 
 use super::types::ErrorResponse;
@@ -24,6 +25,8 @@ pub struct AppState {
     /// Kiro Provider（可选，用于实际 API 调用）
     /// 内部使用 MultiTokenManager，已支持线程安全的多凭据管理
     pub kiro_provider: Option<Arc<KiroProvider>>,
+    /// Token 管理器（用于订阅等级判断等）
+    pub token_manager: Option<Arc<MultiTokenManager>>,
     /// Profile ARN（可选，用于请求）
     pub profile_arn: Option<String>,
     /// 输入压缩配置
@@ -36,6 +39,7 @@ impl AppState {
         Self {
             api_key: api_key.into(),
             kiro_provider: None,
+            token_manager: None,
             profile_arn: None,
             compression_config: CompressionConfig::default(),
         }
@@ -44,6 +48,12 @@ impl AppState {
     /// 设置 KiroProvider
     pub fn with_kiro_provider(mut self, provider: KiroProvider) -> Self {
         self.kiro_provider = Some(Arc::new(provider));
+        self
+    }
+
+    /// 设置 Token 管理器
+    pub fn with_token_manager(mut self, manager: Arc<MultiTokenManager>) -> Self {
+        self.token_manager = Some(manager);
         self
     }
 
