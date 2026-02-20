@@ -175,18 +175,27 @@ pub struct CachedBalancesResponse {
 
 // ============ 延迟测试 ============
 
+/// 单个凭据的延迟测试结果
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LatencyTestItem {
+    /// 凭据 ID
+    pub credential_id: u64,
+    /// 上游 Region
+    pub region: String,
+    /// 测试的 URL
+    pub url: String,
+    /// 端到端延迟（毫秒），失败时为 None
+    pub latency_ms: Option<u64>,
+    /// 错误信息（成功时为 None）
+    pub error: Option<String>,
+}
+
 /// 延迟测试响应
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LatencyTestResponse {
-    /// 端到端延迟（毫秒）
-    pub latency_ms: u64,
-    /// 使用的凭据 ID
-    pub credential_id: u64,
-    /// 上游 Region
-    pub region: String,
-    /// 上游 URL
-    pub url: String,
+    pub results: Vec<LatencyTestItem>,
 }
 
 // ============ 负载均衡配置 ============

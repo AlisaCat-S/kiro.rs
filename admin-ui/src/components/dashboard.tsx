@@ -136,7 +136,11 @@ export function Dashboard({ onLogout }: DashboardProps) {
     try {
       const result = await latencyTest()
       setLatencyResult(result)
-      toast.success(`延迟 ${result.latencyMs}ms（#${result.credentialId} / ${result.region}）`)
+      const summary = result.results.map(r => {
+        const host = new URL(r.url).hostname.split('.')[0]
+        return r.error ? `${host}: 失败` : `${host}: ${r.latencyMs}ms`
+      }).join(' / ')
+      toast.success(summary)
     } catch (error) {
       toast.error(extractErrorMessage(error))
     } finally {
@@ -587,8 +591,15 @@ export function Dashboard({ onLogout }: DashboardProps) {
                 {latencyTesting ? '测试中...' : '测试延迟'}
               </Button>
               {latencyResult && (
-                <div className="text-xs text-muted-foreground">
-                  {latencyResult.latencyMs}ms · #{latencyResult.credentialId} · {latencyResult.region}
+                <div className="text-xs text-muted-foreground space-y-1">
+                  {latencyResult.results.map((item, i) => {
+                    const host = new URL(item.url).hostname
+                    return (
+                      <div key={i}>
+                        {host}: {item.error ? <span className="text-destructive">{item.error}</span> : <span>{item.latencyMs}ms</span>}
+                      </div>
+                    )
+                  })}
                 </div>
               )}
             </CardContent>

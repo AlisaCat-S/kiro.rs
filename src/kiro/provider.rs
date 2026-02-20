@@ -274,6 +274,30 @@ impl KiroProvider {
         self.call_api_with_retry(request_body, false, user_id).await
     }
 
+    /// 向指定 URL 发送非流式 API 请求（用于延迟测试等场景）
+    pub async fn call_api_to_url(
+        &self,
+        request_body: &str,
+        url: &str,
+        user_id: Option<&str>,
+    ) -> anyhow::Result<reqwest::Response> {
+        let ctx = self.token_manager.acquire_context_for_user(user_id).await?;
+        let headers = self.build_headers(&ctx)?;
+        let final_body = Self::inject_profile_arn(request_body, &ctx.credentials)
+            .unwrap_or_else(|_| request_body.to_string());
+        let client = self.get_client_for_credential(&ctx);
+
+        let response = client
+            .post(url)
+            .headers(headers)
+            .body(final_body)
+            .send()
+            .await?;
+
+        self.token_manager.report_success(ctx.id);
+        Ok(response)
+    }
+
     /// 发送流式 API 请求
     ///
     /// 支持多凭据故障转移：

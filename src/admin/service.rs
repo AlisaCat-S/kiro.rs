@@ -18,7 +18,7 @@ use super::types::{
     AddCredentialRequest, AddCredentialResponse, BalanceResponse, CachedBalanceItem,
     CachedBalancesResponse, CredentialStatusItem, CredentialsStatusResponse, ImportAction,
     ImportItemResult, ImportSummary, ImportTokenJsonRequest, ImportTokenJsonResponse,
-    LatencyTestResponse, LoadBalancingModeResponse, SetLoadBalancingModeRequest, TokenJsonItem,
+    LatencyTestItem, LatencyTestResponse, LoadBalancingModeResponse, SetLoadBalancingModeRequest, TokenJsonItem,
 };
 
 /// 余额缓存过期时间（秒），5 分钟
@@ -617,7 +617,7 @@ impl AdminService {
         "social".to_string()
     }
 
-    /// 延迟测试：用最优先凭据向上游发一个最小非流式请求，测量端到端延迟
+    /// 延迟测试：对两个上游端点分别发最小请求，测量端到端延迟
     pub async fn latency_test(&self) -> Result<LatencyTestResponse, AdminServiceError> {
         let provider = self.provider.as_ref().ok_or_else(|| {
             AdminServiceError::InternalError("延迟测试不可用：未配置 KiroProvider".to_string())
@@ -628,10 +628,15 @@ impl AdminService {
             .config()
             .effective_api_region()
             .to_string();
-        let url = format!(
-            "https://q.{}.amazonaws.com/generateAssistantResponse",
-            region
-        );
+
+        let credential_id = self
+            .token_manager
+            .snapshot()
+            .entries
+            .iter()
+            .find(|e| !e.disabled && e.failure_count == 0)
+            .map(|e| e.id)
+            .unwrap_or(0);
 
         // 构造最小有效请求体
         let request_body = serde_json::json!({
@@ -649,38 +654,51 @@ impl AdminService {
         });
         let body_str = request_body.to_string();
 
-        let start = std::time::Instant::now();
-        let resp = provider.call_api(&body_str, None).await.map_err(|e| {
-            AdminServiceError::InternalError(format!("延迟测试请求失败: {}", e))
-        })?;
-        let latency_ms = start.elapsed().as_millis() as u64;
+        let endpoints = vec![
+            format!("https://q.{}.amazonaws.com/generateAssistantResponse", region),
+            format!("https://codewhisperer.{}.amazonaws.com/generateAssistantResponse", region),
+        ];
 
-        let status = resp.status().as_u16();
-        // 读取并丢弃响应体（确保完整测量）
-        let _ = resp.bytes().await;
+        let mut results = Vec::new();
+        for url in &endpoints {
+            let start = std::time::Instant::now();
+            match provider.call_api_to_url(&body_str, url, None).await {
+                Ok(resp) => {
+                    let _ = resp.bytes().await;
+                    let latency_ms = start.elapsed().as_millis() as u64;
+                    tracing::info!(
+                        latency_ms = latency_ms,
+                        url = %url,
+                        credential_id = credential_id,
+                        "延迟测试完成"
+                    );
+                    results.push(LatencyTestItem {
+                        credential_id,
+                        region: region.clone(),
+                        url: url.clone(),
+                        latency_ms: Some(latency_ms),
+                        error: None,
+                    });
+                }
+                Err(e) => {
+                    let latency_ms = start.elapsed().as_millis() as u64;
+                    tracing::warn!(
+                        latency_ms = latency_ms,
+                        url = %url,
+                        error = %e,
+                        "延迟测试失败"
+                    );
+                    results.push(LatencyTestItem {
+                        credential_id,
+                        region: region.clone(),
+                        url: url.clone(),
+                        latency_ms: Some(latency_ms),
+                        error: Some(e.to_string()),
+                    });
+                }
+            }
+        }
 
-        tracing::info!(
-            latency_ms = latency_ms,
-            status = status,
-            region = %region,
-            "延迟测试完成"
-        );
-
-        // 从 provider 获取实际使用的凭据 ID（通过 snapshot 的第一个可用凭据近似）
-        let credential_id = self
-            .token_manager
-            .snapshot()
-            .entries
-            .iter()
-            .find(|e| !e.disabled && e.failure_count == 0)
-            .map(|e| e.id)
-            .unwrap_or(0);
-
-        Ok(LatencyTestResponse {
-            latency_ms,
-            credential_id,
-            region,
-            url,
-        })
+        Ok(LatencyTestResponse { results })
     }
 }

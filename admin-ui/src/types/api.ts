@@ -261,11 +261,16 @@ export interface CredentialAccountInfoResponse {
 
 // ============ 延迟测试 ============
 
-export interface LatencyTestResponse {
-  latencyMs: number
+export interface LatencyTestItem {
   credentialId: number
   region: string
   url: string
+  latencyMs: number | null
+  error: string | null
+}
+
+export interface LatencyTestResponse {
+  results: LatencyTestItem[]
 }
 
 // ============ 批量导入 token.json ============
