@@ -88,6 +88,15 @@ pub async fn get_cached_balances(State(state): State<AdminState>) -> impl IntoRe
     Json(state.service.get_cached_balances())
 }
 
+/// POST /api/admin/latency-test
+/// 延迟测试
+pub async fn latency_test(State(state): State<AdminState>) -> impl IntoResponse {
+    match state.service.latency_test().await {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
 /// POST /api/admin/credentials
 /// 添加新凭据
 pub async fn add_credential(

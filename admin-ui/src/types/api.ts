@@ -259,6 +259,15 @@ export interface CredentialAccountInfoResponse {
   account: AccountAggregateInfo
 }
 
+// ============ 延迟测试 ============
+
+export interface LatencyTestResponse {
+  latencyMs: number
+  credentialId: number
+  region: string
+  url: string
+}
+
 // ============ 批量导入 token.json ============
 
 // 官方 token.json 格式（用于解析导入）

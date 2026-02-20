@@ -173,6 +173,22 @@ pub struct CachedBalancesResponse {
     pub balances: Vec<CachedBalanceItem>,
 }
 
+// ============ 延迟测试 ============
+
+/// 延迟测试响应
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LatencyTestResponse {
+    /// 端到端延迟（毫秒）
+    pub latency_ms: u64,
+    /// 使用的凭据 ID
+    pub credential_id: u64,
+    /// 上游 Region
+    pub region: String,
+    /// 上游 URL
+    pub url: String,
+}
+
 // ============ 负载均衡配置 ============
 
 /// 负载均衡模式响应

@@ -13,6 +13,7 @@ import type {
   CredentialAccountInfoResponse,
   ImportTokenJsonRequest,
   ImportTokenJsonResponse,
+  LatencyTestResponse,
 } from '@/types/api'
 
 // 创建 axios 实例
@@ -142,5 +143,11 @@ export async function getLoadBalancingMode(): Promise<{ mode: 'priority' | 'bala
 // 设置负载均衡模式
 export async function setLoadBalancingMode(mode: 'priority' | 'balanced'): Promise<{ mode: 'priority' | 'balanced' }> {
   const { data } = await api.put<{ mode: 'priority' | 'balanced' }>('/config/load-balancing', { mode })
+  return data
+}
+
+// 延迟测试
+export async function latencyTest(): Promise<LatencyTestResponse> {
+  const { data } = await api.post<LatencyTestResponse>('/latency-test')
   return data
 }

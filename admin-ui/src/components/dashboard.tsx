@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { RefreshCw, LogOut, Moon, Sun, Server, Plus, Upload, Trash2, RotateCcw, CheckCircle2 } from 'lucide-react'
+import { RefreshCw, LogOut, Moon, Sun, Server, Plus, Upload, Trash2, RotateCcw, CheckCircle2, Activity } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { storage } from '@/lib/storage'
@@ -11,10 +11,10 @@ import { AddCredentialDialog } from '@/components/add-credential-dialog'
 import { ImportTokenJsonDialog } from '@/components/import-token-json-dialog'
 import { BatchVerifyDialog, type VerifyResult } from '@/components/batch-verify-dialog'
 import { useCredentials, useCachedBalances, useDeleteCredential, useResetFailure, useLoadBalancingMode, useSetLoadBalancingMode } from '@/hooks/use-credentials'
-import { getCredentialBalance } from '@/api/credentials'
+import { getCredentialBalance, latencyTest } from '@/api/credentials'
 import { extractErrorMessage } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
-import type { BalanceResponse } from '@/types/api'
+import type { BalanceResponse, LatencyTestResponse } from '@/types/api'
 
 interface DashboardProps {
   onLogout: () => void
@@ -35,6 +35,8 @@ export function Dashboard({ onLogout }: DashboardProps) {
   const [loadingBalanceIds, setLoadingBalanceIds] = useState<Set<number>>(new Set())
   const [queryingInfo, setQueryingInfo] = useState(false)
   const [queryInfoProgress, setQueryInfoProgress] = useState({ current: 0, total: 0 })
+  const [latencyTesting, setLatencyTesting] = useState(false)
+  const [latencyResult, setLatencyResult] = useState<LatencyTestResponse | null>(null)
   const cancelVerifyRef = useRef(false)
   const [currentPage, setCurrentPage] = useState(1)
   const itemsPerPage = 12
@@ -126,6 +128,20 @@ export function Dashboard({ onLogout }: DashboardProps) {
   const handleRefresh = () => {
     refetch()
     toast.success('已刷新凭据列表')
+  }
+
+  const handleLatencyTest = async () => {
+    if (latencyTesting) return
+    setLatencyTesting(true)
+    try {
+      const result = await latencyTest()
+      setLatencyResult(result)
+      toast.success(`延迟 ${result.latencyMs}ms（#${result.credentialId} / ${result.region}）`)
+    } catch (error) {
+      toast.error(extractErrorMessage(error))
+    } finally {
+      setLatencyTesting(false)
+    }
   }
 
   const handleLogout = () => {
@@ -533,7 +549,7 @@ export function Dashboard({ onLogout }: DashboardProps) {
       {/* 主内容 */}
       <main className="container mx-auto px-4 md:px-8 py-6">
         {/* 统计卡片 */}
-        <div className="grid gap-4 md:grid-cols-2 mb-6">
+        <div className="grid gap-4 md:grid-cols-3 mb-6">
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">
@@ -552,6 +568,29 @@ export function Dashboard({ onLogout }: DashboardProps) {
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold text-green-600">{data?.available || 0}</div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium text-muted-foreground">
+                延迟测试
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleLatencyTest}
+                disabled={latencyTesting}
+              >
+                <Activity className={`h-4 w-4 mr-2 ${latencyTesting ? 'animate-pulse' : ''}`} />
+                {latencyTesting ? '测试中...' : '测试延迟'}
+              </Button>
+              {latencyResult && (
+                <div className="text-xs text-muted-foreground">
+                  {latencyResult.latencyMs}ms · #{latencyResult.credentialId} · {latencyResult.region}
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>

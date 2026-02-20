@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::common::utf8::floor_char_boundary;
 use crate::kiro::model::credentials::KiroCredentials;
+use crate::kiro::provider::KiroProvider;
 use crate::kiro::token_manager::MultiTokenManager;
 
 use super::error::AdminServiceError;
@@ -17,7 +18,7 @@ use super::types::{
     AddCredentialRequest, AddCredentialResponse, BalanceResponse, CachedBalanceItem,
     CachedBalancesResponse, CredentialStatusItem, CredentialsStatusResponse, ImportAction,
     ImportItemResult, ImportSummary, ImportTokenJsonRequest, ImportTokenJsonResponse,
-    LoadBalancingModeResponse, SetLoadBalancingModeRequest, TokenJsonItem,
+    LatencyTestResponse, LoadBalancingModeResponse, SetLoadBalancingModeRequest, TokenJsonItem,
 };
 
 /// 余额缓存过期时间（秒），5 分钟
@@ -37,6 +38,7 @@ struct CachedBalance {
 /// 封装所有 Admin API 的业务逻辑
 pub struct AdminService {
     token_manager: Arc<MultiTokenManager>,
+    provider: Option<Arc<KiroProvider>>,
     balance_cache: Mutex<HashMap<u64, CachedBalance>>,
     cache_path: Option<PathBuf>,
 }
@@ -51,9 +53,16 @@ impl AdminService {
 
         Self {
             token_manager,
+            provider: None,
             balance_cache: Mutex::new(balance_cache),
             cache_path,
         }
+    }
+
+    /// 设置 KiroProvider（用于延迟测试等需要发送上游请求的功能）
+    pub fn with_provider(mut self, provider: Arc<KiroProvider>) -> Self {
+        self.provider = Some(provider);
+        self
     }
 
     /// 获取所有凭据状态
@@ -606,5 +615,72 @@ impl AdminService {
 
         // 默认 social
         "social".to_string()
+    }
+
+    /// 延迟测试：用最优先凭据向上游发一个最小非流式请求，测量端到端延迟
+    pub async fn latency_test(&self) -> Result<LatencyTestResponse, AdminServiceError> {
+        let provider = self.provider.as_ref().ok_or_else(|| {
+            AdminServiceError::InternalError("延迟测试不可用：未配置 KiroProvider".to_string())
+        })?;
+
+        let region = self
+            .token_manager
+            .config()
+            .effective_api_region()
+            .to_string();
+        let url = format!(
+            "https://q.{}.amazonaws.com/generateAssistantResponse",
+            region
+        );
+
+        // 构造最小有效请求体
+        let request_body = serde_json::json!({
+            "conversationState": {
+                "conversationId": "latency-test",
+                "chatTriggerType": "MANUAL",
+                "currentMessage": {
+                    "userInputMessage": {
+                        "content": "ping",
+                        "modelId": "claude-sonnet-4-20250514",
+                        "userInputMessageContext": {}
+                    }
+                }
+            }
+        });
+        let body_str = request_body.to_string();
+
+        let start = std::time::Instant::now();
+        let resp = provider.call_api(&body_str, None).await.map_err(|e| {
+            AdminServiceError::InternalError(format!("延迟测试请求失败: {}", e))
+        })?;
+        let latency_ms = start.elapsed().as_millis() as u64;
+
+        let status = resp.status().as_u16();
+        // 读取并丢弃响应体（确保完整测量）
+        let _ = resp.bytes().await;
+
+        tracing::info!(
+            latency_ms = latency_ms,
+            status = status,
+            region = %region,
+            "延迟测试完成"
+        );
+
+        // 从 provider 获取实际使用的凭据 ID（通过 snapshot 的第一个可用凭据近似）
+        let credential_id = self
+            .token_manager
+            .snapshot()
+            .entries
+            .iter()
+            .find(|e| !e.disabled && e.failure_count == 0)
+            .map(|e| e.id)
+            .unwrap_or(0);
+
+        Ok(LatencyTestResponse {
+            latency_ms,
+            credential_id,
+            region,
+            url,
+        })
     }
 }
