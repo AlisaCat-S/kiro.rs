@@ -441,16 +441,23 @@ fn calculate_tokens(width: u32, height: u32) -> u64 {
 fn encode_image(img: &DynamicImage, format: &str) -> Result<(String, usize), String> {
     let mut buffer = Cursor::new(Vec::new());
 
-    let image_format = match format {
-        "jpeg" | "jpg" => ImageFormat::Jpeg,
-        "png" => ImageFormat::Png,
-        "gif" => ImageFormat::Gif,
-        "webp" => ImageFormat::WebP,
-        _ => return Err(format!("不支持的图片格式: {}", format)),
-    };
-
-    img.write_to(&mut buffer, image_format)
-        .map_err(|e| format!("图片编码失败: {}", e))?;
+    match format {
+        "jpeg" | "jpg" => {
+            let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, 85);
+            img.write_with_encoder(encoder)
+                .map_err(|e| format!("JPEG 编码失败: {}", e))?;
+        }
+        _ => {
+            let image_format = match format {
+                "png" => ImageFormat::Png,
+                "gif" => ImageFormat::Gif,
+                "webp" => ImageFormat::WebP,
+                _ => return Err(format!("不支持的图片格式: {}", format)),
+            };
+            img.write_to(&mut buffer, image_format)
+                .map_err(|e| format!("图片编码失败: {}", e))?;
+        }
+    }
 
     let encoded = buffer.into_inner();
     let bytes_len = encoded.len();
