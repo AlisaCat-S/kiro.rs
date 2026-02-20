@@ -225,12 +225,7 @@ async fn refresh_social_token(
     tracing::info!("正在刷新 Social Token...");
 
     let refresh_token = credentials.refresh_token.as_ref().unwrap();
-    // 优先使用凭据级 region，未配置或为空时回退到 config.region
-    let region = credentials
-        .region
-        .as_ref()
-        .filter(|r| !r.trim().is_empty())
-        .unwrap_or(&config.region);
+    let region = credentials.effective_auth_region(config);
 
     let refresh_url = format!("https://prod.{}.auth.desktop.kiro.dev/refreshToken", region);
     let refresh_domain = format!("prod.{}.auth.desktop.kiro.dev", region);
@@ -316,12 +311,7 @@ async fn refresh_idc_token(
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("IdC 刷新需要 clientSecret"))?;
 
-    // 优先使用凭据级 region，未配置或为空时回退到 config.region
-    let region = credentials
-        .region
-        .as_ref()
-        .filter(|r| !r.trim().is_empty())
-        .unwrap_or(&config.region);
+    let region = credentials.effective_auth_region(config);
     let refresh_url = format!("https://oidc.{}.amazonaws.com/token", region);
 
     let client = build_client(proxy, 60, config.tls_backend)?;
