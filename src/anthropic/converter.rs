@@ -452,8 +452,16 @@ fn inject_write_edit_tool_suffixes(tools: &mut [KiroTool]) -> bool {
             "Edit" => EDIT_TOOL_DESCRIPTION_SUFFIX,
             _ => continue,
         };
+        let before = tool.tool_specification.description.len();
         tool.tool_specification.description.push('\n');
         tool.tool_specification.description.push_str(suffix);
+        let after = tool.tool_specification.description.len();
+        tracing::info!(
+            tool = tool.tool_specification.name,
+            before_bytes = before,
+            after_bytes = after,
+            "工具描述后缀已注入（压缩后）"
+        );
         found = true;
     }
     found
@@ -471,15 +479,26 @@ fn inject_system_chunked_policy(history: &mut Vec<Message>, model_id: &str) {
     );
     if is_system_pair {
         if let Some(Message::User(user_msg)) = history.first_mut() {
+            let before = user_msg.user_input_message.content.len();
             user_msg.user_input_message.content.push('\n');
             user_msg
                 .user_input_message
                 .content
                 .push_str(SYSTEM_CHUNKED_POLICY);
+            let after = user_msg.user_input_message.content.len();
+            tracing::info!(
+                before_bytes = before,
+                after_bytes = after,
+                "分块写入策略已注入系统消息（压缩后）"
+            );
             return;
         }
     }
     // 没有系统配对，在头部插入新配对
+    tracing::info!(
+        bytes = SYSTEM_CHUNKED_POLICY.len(),
+        "分块写入策略已插入新系统配对（压缩后）"
+    );
     let user_msg = HistoryUserMessage::new(SYSTEM_CHUNKED_POLICY, model_id);
     let assistant_msg = HistoryAssistantMessage::new("I will follow these instructions.");
     history.insert(0, Message::User(user_msg));
