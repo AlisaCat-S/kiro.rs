@@ -462,8 +462,8 @@ fn process_message_content(
                         }
                         "image" => {
                             if let Some(source) = block.source {
-                                if let Some(format) = get_image_format(&source.media_type) {
-                                    images.push(KiroImage::from_base64(format, source.data));
+                                if let Some(image) = build_kiro_image(source) {
+                                    images.push(image);
                                 }
                             }
                         }
@@ -482,6 +482,10 @@ fn process_message_content(
 
                                 tool_results.push(result);
                             }
+                            // 递归提取 tool_result 内嵌的图片（如浏览器截图）
+                            if let Some(ref content) = block.content {
+                                extract_images_from_content(content, &mut images);
+                            }
                         }
                         "tool_use" => {
                             // tool_use 在 assistant 消息中处理，这里忽略
@@ -498,13 +502,132 @@ fn process_message_content(
 }
 
 /// 从 media_type 获取图片格式
+///
+/// 优先精确匹配已知的 4 种 MIME 类型，
+/// 对未匹配的 `image/*` 类型取后缀作为 format（兼容 `image/jpg` 等变体），
+/// 非 `image/` 前缀的类型返回 None 并打印警告日志。
 fn get_image_format(media_type: &str) -> Option<String> {
     match media_type {
         "image/jpeg" => Some("jpeg".to_string()),
         "image/png" => Some("png".to_string()),
         "image/gif" => Some("gif".to_string()),
         "image/webp" => Some("webp".to_string()),
-        _ => None,
+        _ => {
+            if let Some(subtype) = media_type.strip_prefix("image/") {
+                // 取 `;` 前的部分，兼容 `image/jpeg;charset=utf-8` 等
+                let format = subtype.split(';').next().unwrap_or(subtype).trim();
+                if !format.is_empty() {
+                    // 规范化常见变体
+                    let format = if format.eq_ignore_ascii_case("jpg") {
+                        "jpeg"
+                    } else {
+                        format
+                    };
+                    tracing::info!("使用非标准图片格式: {} → {}", media_type, format);
+                    return Some(format.to_string());
+                }
+            }
+            tracing::warn!("不支持的图片 media_type: {}", media_type);
+            None
+        }
+    }
+}
+
+/// 剥离 data URL 前缀，返回 (纯 base64 数据, 解析出的 media_type)
+///
+/// 支持格式: `data:image/png;base64,iVBOR...`
+/// 如果输入不含 data URL 前缀，原样返回数据并使用传入的 media_type。
+fn sanitize_image_data<'a>(
+    media_type: Option<&str>,
+    data: &'a str,
+) -> (&'a str, Option<String>) {
+    let trimmed = data.trim();
+
+    // 尝试解析 data URL 前缀
+    if let Some(rest) = trimmed.strip_prefix("data:") {
+        if let Some((header, payload)) = rest.split_once(',') {
+            // header 格式: "image/png;base64" 或 "image/png;charset=utf-8;base64"
+            let mut parts = header.split(';');
+            let header_mime = parts.next().map(str::trim).filter(|s| !s.is_empty());
+            let is_base64 = parts.any(|p| p.trim().eq_ignore_ascii_case("base64"));
+
+            if is_base64 {
+                if let Some(mime) = header_mime {
+                    if mime.starts_with("image/") {
+                        return (payload, Some(mime.to_string()));
+                    }
+                }
+            }
+        }
+    }
+
+    // 非 data URL，原样返回
+    let resolved = media_type
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    (trimmed, resolved)
+}
+
+/// 从 ImageSource 构建 KiroImage，统一处理 data URL 剥离、空数据校验、格式解析
+fn build_kiro_image(source: super::types::ImageSource) -> Option<KiroImage> {
+    let raw_data = match source.data.as_deref() {
+        Some(d) if !d.trim().is_empty() => d,
+        _ => {
+            tracing::warn!("图片 data 为空或缺失，已跳过");
+            return None;
+        }
+    };
+
+    let (clean_data, resolved_media_type) =
+        sanitize_image_data(source.media_type.as_deref(), raw_data);
+
+    if clean_data.is_empty() {
+        tracing::warn!("图片 data 剥离前缀后为空，已跳过");
+        return None;
+    }
+
+    let media_type = match resolved_media_type.as_deref() {
+        Some(mt) => mt,
+        None => {
+            tracing::warn!("图片 media_type 缺失且无法从 data URL 推断，已跳过");
+            return None;
+        }
+    };
+
+    let format = get_image_format(media_type)?;
+    Some(KiroImage::from_base64(format, clean_data.to_string()))
+}
+
+/// 递归提取内容中的图片（用于 tool_result 内嵌图片场景）
+fn extract_images_from_content(content: &serde_json::Value, images: &mut Vec<KiroImage>) {
+    match content {
+        serde_json::Value::Array(arr) => {
+            for item in arr {
+                extract_images_from_content(item, images);
+            }
+        }
+        serde_json::Value::Object(_) => {
+            if let Ok(block) = serde_json::from_value::<ContentBlock>(content.clone()) {
+                match block.block_type.as_str() {
+                    "image" => {
+                        if let Some(source) = block.source {
+                            if let Some(image) = build_kiro_image(source) {
+                                images.push(image);
+                            }
+                        }
+                    }
+                    "tool_result" => {
+                        // 递归处理嵌套的 tool_result content
+                        if let Some(ref inner) = block.content {
+                            extract_images_from_content(inner, images);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
     }
 }
 

@@ -264,8 +264,10 @@ pub struct ContentBlock {
 pub struct ImageSource {
     #[serde(rename = "type")]
     pub source_type: String,
-    pub media_type: String,
-    pub data: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
 }
 
 // === Count Tokens 端点类型 ===
