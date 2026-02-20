@@ -423,10 +423,67 @@ pub fn convert_request(
         None
     };
 
+    // 15. 压缩与截断全部完成后，注入 Write/Edit 工具后缀和分块写入策略
+    // 放在最后确保后缀不会被工具压缩或历史截断吃掉
+    let has_write_edit = inject_write_edit_tool_suffixes(
+        &mut conversation_state
+            .current_message
+            .user_input_message
+            .user_input_message_context
+            .tools,
+    );
+    if has_write_edit {
+        inject_system_chunked_policy(&mut conversation_state.history, &model_id);
+    }
+
     Ok(ConversionResult {
         conversation_state,
         compression_stats,
     })
+}
+
+/// 在压缩完成后为 Write/Edit 工具补充描述后缀
+/// 返回是否找到了 Write 或 Edit 工具
+fn inject_write_edit_tool_suffixes(tools: &mut [KiroTool]) -> bool {
+    let mut found = false;
+    for tool in tools.iter_mut() {
+        let suffix = match tool.tool_specification.name.as_str() {
+            "Write" => WRITE_TOOL_DESCRIPTION_SUFFIX,
+            "Edit" => EDIT_TOOL_DESCRIPTION_SUFFIX,
+            _ => continue,
+        };
+        tool.tool_specification.description.push('\n');
+        tool.tool_specification.description.push_str(suffix);
+        found = true;
+    }
+    found
+}
+
+/// 在历史的系统消息中追加分块写入策略
+/// 如果历史头部是系统配对（user + "I will follow these instructions."），追加到该 user 消息
+/// 否则在头部插入新的 user+assistant 配对
+fn inject_system_chunked_policy(history: &mut Vec<Message>, model_id: &str) {
+    // 检查前两条消息是否为系统配对
+    let is_system_pair = matches!(
+        history.get(0..2),
+        Some([Message::User(_), Message::Assistant(a)])
+            if a.assistant_response_message.content == "I will follow these instructions."
+    );
+    if is_system_pair {
+        if let Some(Message::User(user_msg)) = history.first_mut() {
+            user_msg.user_input_message.content.push('\n');
+            user_msg
+                .user_input_message
+                .content
+                .push_str(SYSTEM_CHUNKED_POLICY);
+            return;
+        }
+    }
+    // 没有系统配对，在头部插入新配对
+    let user_msg = HistoryUserMessage::new(SYSTEM_CHUNKED_POLICY, model_id);
+    let assistant_msg = HistoryAssistantMessage::new("I will follow these instructions.");
+    history.insert(0, Message::User(user_msg));
+    history.insert(1, Message::Assistant(assistant_msg));
 }
 
 /// 确定聊天触发类型
@@ -782,22 +839,11 @@ fn convert_tools(
             !dominated
         })
         .map(|t| {
-            let mut description = if t.description.trim().is_empty() {
+            let description = if t.description.trim().is_empty() {
                 format!("Tool: {}", t.name)
             } else {
                 t.description.clone()
             };
-
-            // 对 Write/Edit 工具追加自定义描述后缀
-            let suffix = match t.name.as_str() {
-                "Write" => WRITE_TOOL_DESCRIPTION_SUFFIX,
-                "Edit" => EDIT_TOOL_DESCRIPTION_SUFFIX,
-                _ => "",
-            };
-            if !suffix.is_empty() {
-                description.push('\n');
-                description.push_str(suffix);
-            }
 
             // 限制描述长度（0=不截断；安全截断 UTF-8，单次遍历）
             let description = if max_description_chars > 0 {
@@ -858,13 +904,6 @@ fn has_thinking_tags(content: &str) -> bool {
     content.contains("<thinking_mode>") || content.contains("<max_thinking_length>")
 }
 
-/// 检查请求的工具列表中是否包含 Write 或 Edit 工具
-fn has_write_or_edit_tool(req: &MessagesRequest) -> bool {
-    req.tools
-        .as_ref()
-        .is_some_and(|tools| tools.iter().any(|t| t.name == "Write" || t.name == "Edit"))
-}
-
 /// 构建历史消息
 /// `messages` 参数是经过 prefill 预处理后的消息切片（末尾必为 user）
 fn build_history(
@@ -880,9 +919,6 @@ fn build_history(
     // 生成thinking前缀（如果需要）
     let thinking_prefix = generate_thinking_prefix(req);
 
-    // 仅在请求包含 Write/Edit 工具时注入分块写入策略
-    let should_inject_chunked_policy = has_write_or_edit_tool(req);
-
     // 1. 处理系统消息
     if let Some(ref system) = req.system {
         let system_content: String = system
@@ -892,13 +928,6 @@ fn build_history(
             .join("\n");
 
         if !system_content.is_empty() {
-            // 仅在存在 Write/Edit 工具时追加分块写入策略到系统消息
-            let system_content = if should_inject_chunked_policy {
-                format!("{}\n{}", system_content, SYSTEM_CHUNKED_POLICY)
-            } else {
-                system_content
-            };
-
             // 注入thinking标签到系统消息最前面（如果需要且不存在）
             let final_content = if let Some(ref prefix) = thinking_prefix {
                 if !has_thinking_tags(&system_content) {
@@ -917,18 +946,9 @@ fn build_history(
             let assistant_msg = HistoryAssistantMessage::new("I will follow these instructions.");
             history.push(Message::Assistant(assistant_msg));
         }
-    } else if thinking_prefix.is_some() || should_inject_chunked_policy {
-        // 没有系统消息但需要注入 thinking 配置或分块写入策略
-        let mut parts = Vec::new();
-        if let Some(ref prefix) = thinking_prefix {
-            parts.push(prefix.clone());
-        }
-        if should_inject_chunked_policy {
-            parts.push(SYSTEM_CHUNKED_POLICY.to_string());
-        }
-        let content = parts.join("\n");
-
-        let user_msg = HistoryUserMessage::new(content, model_id);
+    } else if let Some(ref prefix) = thinking_prefix {
+        // 没有系统消息但需要注入 thinking 配置
+        let user_msg = HistoryUserMessage::new(prefix.clone(), model_id);
         history.push(Message::User(user_msg));
 
         let assistant_msg = HistoryAssistantMessage::new("I will follow these instructions.");
