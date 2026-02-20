@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use crate::model::config::CompressionConfig;
 
-const GIF_MAX_OUTPUT_FRAMES: usize = 20;
+const GIF_MAX_OUTPUT_FRAMES: usize = 8;
 const GIF_MAX_FPS: usize = 5;
 const GIF_MIN_FRAME_DELAY: Duration = Duration::from_millis(10);
 const GIF_FRAME_OUTPUT_FORMAT: &str = "jpeg";
