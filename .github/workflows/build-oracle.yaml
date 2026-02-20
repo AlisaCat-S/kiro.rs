@@ -1,0 +1,72 @@
+name: Build for Oracle Linux (Strict Compatibility)
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-in-container:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+          - runner: ubuntu-24.04
+            arch: amd64
+
+    runs-on: ${{ matrix.runner }}
+
+    container:
+      image: oraclelinux:8
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install System Dependencies
+        run: |
+          dnf module enable -y nodejs:20
+          dnf groupinstall -y "Development Tools"
+          dnf install -y openssl-devel perl-core nodejs
+          node -v
+
+      - name: Build admin-ui
+        working-directory: admin-ui
+        run: |
+          npm install
+          npm run build
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Build app
+        run: |
+          source $HOME/.cargo/env
+          cargo build --release
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kiro-rs-oracle-linux-8-${{ matrix.arch }}
+          path: target/release/kiro-rs
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(TZ='Asia/Shanghai' date +'%Y%m%d-%H%M%S')
+          echo "version=v${VERSION}-oracle-${{ matrix.arch }}" >> $GITHUB_OUTPUT
+
+      - name: Create Release and upload
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: ${{ steps.version.outputs.version }}
+          body: "Oracle Linux 8 ${{ matrix.arch }} build from commit ${{ github.sha }}"
+          make_latest: false
+          files: target/release/kiro-rs
