@@ -758,17 +758,17 @@ impl MultiTokenManager {
         credentials_path: Option<PathBuf>,
         is_multiple_format: bool,
     ) -> anyhow::Result<Self> {
-        let rate_limit_config = {
+        let rate_limit_config = if config.enable_rate_limit {
             let mut cfg = RateLimitConfig::default();
             if let Some(rpm) = config.credential_rpm.filter(|&v| v > 0) {
-                // RPM -> 固定间隔（ms），例如 20 RPM => 3000ms
                 let interval_ms = (60_000u64 / rpm as u64).max(1);
                 cfg.min_interval_ms = interval_ms;
                 cfg.max_interval_ms = interval_ms;
-                // 固定间隔下抖动无意义，避免反复计算造成误差
                 cfg.jitter_percent = 0.0;
             }
             cfg
+        } else {
+            RateLimitConfig::disabled()
         };
 
         // 计算当前最大 ID，为没有 ID 的凭据分配新 ID

@@ -79,6 +79,21 @@ impl Default for RateLimitConfig {
     }
 }
 
+impl RateLimitConfig {
+    /// 完全禁用速率限制
+    pub fn disabled() -> Self {
+        Self {
+            daily_max_requests: u32::MAX,
+            min_interval_ms: 0,
+            max_interval_ms: 0,
+            jitter_percent: 0.0,
+            backoff_base_ms: 0,
+            backoff_max_ms: 0,
+            backoff_multiplier: 0.0,
+        }
+    }
+}
+
 /// 凭据速率状态
 #[derive(Debug, Clone)]
 struct CredentialRateState {

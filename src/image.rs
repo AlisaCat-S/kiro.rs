@@ -312,12 +312,10 @@ pub fn process_image(
 
     if force_reencode_large {
         tracing::info!(
-            original_bytes = original_bytes_len,
-            threshold_bytes = MAX_IMAGE_BYTES,
-            width = original_size.0,
-            height = original_size.1,
-            format = format,
-            "图片文件过大，强制重新编码以降低质量"
+            "图片文件过大 ({}, {}x{}, {})，强制重新编码",
+            format_bytes(original_bytes_len),
+            original_size.0, original_size.1,
+            format,
         );
     }
 
@@ -332,19 +330,43 @@ pub fn process_image(
             img
         };
         let size = (processed.width(), processed.height());
-        let (data, bytes_len) = encode_image(&processed, format)?;
+        // 大文件重编码时，无损格式（PNG/WebP）转为 JPEG 以实现有损压缩
+        let encode_format = if force_reencode_large && matches!(format, "png" | "webp") {
+            "jpeg"
+        } else {
+            format
+        };
+        let (data, bytes_len) = encode_image(&processed, encode_format)?;
         let was_reencoded = (force_reencode_gif || force_reencode_large) && !needs_resize;
 
         if force_reencode_large && !needs_resize {
-            tracing::info!(
-                original_bytes = original_bytes_len,
-                final_bytes = bytes_len,
-                compression_ratio = format!(
-                    "{:.1}%",
-                    (1.0 - bytes_len as f64 / original_bytes_len as f64) * 100.0
-                ),
-                "大文件重新编码完成"
-            );
+            if bytes_len < original_bytes_len {
+                tracing::info!(
+                    "图片重编码: {} {}x{} {} → {} (节省 {})",
+                    format,
+                    size.0, size.1,
+                    format_bytes(original_bytes_len),
+                    format_bytes(bytes_len),
+                    format_bytes(original_bytes_len - bytes_len),
+                );
+            } else {
+                // 重编码后反而变大，保留原始数据
+                tracing::info!(
+                    "图片重编码无效 ({}→{})，保留原始数据",
+                    format_bytes(original_bytes_len),
+                    format_bytes(bytes_len),
+                );
+                return Ok(ImageProcessResult {
+                    data: base64_data.to_string(),
+                    original_size,
+                    final_size: original_size,
+                    tokens: calculate_tokens(original_size.0, original_size.1),
+                    was_resized: false,
+                    was_reencoded: false,
+                    original_bytes_len,
+                    final_bytes_len: original_bytes_len,
+                });
+            }
         }
 
         (data, size, bytes_len, was_reencoded)
@@ -375,6 +397,17 @@ pub fn process_image(
 ///
 /// 1. 长边不超过 max_long_edge
 /// 2. 总像素不超过 max_pixels
+/// 格式化字节数为人类可读形式
+fn format_bytes(bytes: usize) -> String {
+    if bytes < 1024 {
+        format!("{}B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1}KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1}MB", bytes as f64 / (1024.0 * 1024.0))
+    }
+}
+
 fn apply_scaling_rules(width: u32, height: u32, max_long_edge: u32, max_pixels: u32) -> (u32, u32) {
     let mut w = width as f64;
     let mut h = height as f64;

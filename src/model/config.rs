@@ -91,6 +91,13 @@ pub struct Config {
     #[serde(default)]
     pub credential_rpm: Option<u32>,
 
+    /// 是否启用凭据级速率限制（请求间隔、每日上限、失败退避等）
+    ///
+    /// - `false`（默认）: 不限制请求频率
+    /// - `true`: 启用速率限制，配合 `credentialRpm` 使用
+    #[serde(default)]
+    pub enable_rate_limit: bool,
+
     /// 负载均衡模式（"priority" 或 "balanced"）
     #[serde(default = "default_load_balancing_mode")]
     pub load_balancing_mode: String,
@@ -297,6 +304,7 @@ impl Default for Config {
             proxy_password: None,
             admin_api_key: None,
             credential_rpm: None,
+            enable_rate_limit: false,
             load_balancing_mode: default_load_balancing_mode(),
             compression: CompressionConfig::default(),
             config_path: None,
