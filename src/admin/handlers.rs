@@ -149,3 +149,23 @@ pub async fn set_load_balancing_mode(
         Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
     }
 }
+
+/// GET /api/admin/config/debug-mode
+/// 获取 Debug 模式状态
+pub async fn get_debug_mode() -> impl IntoResponse {
+    Json(serde_json::json!({
+        "enabled": crate::anthropic::debug_dump::is_debug_enabled()
+    }))
+}
+
+/// PUT /api/admin/config/debug-mode
+/// 设置 Debug 模式状态
+pub async fn set_debug_mode_handler(
+    Json(payload): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let enabled = payload.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+    crate::anthropic::debug_dump::set_debug_enabled(enabled);
+    Json(serde_json::json!({
+        "enabled": enabled
+    }))
+}

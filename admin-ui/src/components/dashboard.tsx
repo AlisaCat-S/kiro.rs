@@ -11,7 +11,7 @@ import { AddCredentialDialog } from '@/components/add-credential-dialog'
 import { ImportTokenJsonDialog } from '@/components/import-token-json-dialog'
 import { BatchVerifyDialog, type VerifyResult } from '@/components/batch-verify-dialog'
 import { useCredentials, useCachedBalances, useDeleteCredential, useResetFailure, useLoadBalancingMode, useSetLoadBalancingMode } from '@/hooks/use-credentials'
-import { getCredentialBalance, latencyTest } from '@/api/credentials'
+import { getCredentialBalance, latencyTest, getDebugMode, setDebugMode } from '@/api/credentials'
 import { extractErrorMessage } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import type { BalanceResponse, LatencyTestResponse } from '@/types/api'
@@ -37,6 +37,8 @@ export function Dashboard({ onLogout }: DashboardProps) {
   const [queryInfoProgress, setQueryInfoProgress] = useState({ current: 0, total: 0 })
   const [latencyTesting, setLatencyTesting] = useState(false)
   const [latencyResult, setLatencyResult] = useState<LatencyTestResponse | null>(null)
+  const [debugMode, setDebugModeState] = useState(false)
+  const [debugModeLoading, setDebugModeLoading] = useState(false)
   const cancelVerifyRef = useRef(false)
   const [currentPage, setCurrentPage] = useState(1)
   const itemsPerPage = 12
@@ -75,6 +77,19 @@ export function Dashboard({ onLogout }: DashboardProps) {
   useEffect(() => {
     setCurrentPage(1)
   }, [data?.credentials.length])
+
+  // 加载 Debug 模式状态
+  useEffect(() => {
+    const loadDebugMode = async () => {
+      try {
+        const result = await getDebugMode()
+        setDebugModeState(result.enabled)
+      } catch (err) {
+        console.error('加载 Debug 模式失败:', err)
+      }
+    }
+    loadDebugMode()
+  }, [])
 
   // 只保留当前仍存在的凭据缓存，避免删除后残留旧数据
   useEffect(() => {
@@ -528,6 +543,27 @@ export function Dashboard({ onLogout }: DashboardProps) {
             <span className="font-semibold">Kiro Admin</span>
           </div>
           <div className="flex items-center gap-2">
+            <Button
+              variant={debugMode ? "default" : "outline"}
+              size="sm"
+              onClick={async () => {
+                setDebugModeLoading(true)
+                try {
+                  const newState = !debugMode
+                  await setDebugMode(newState)
+                  setDebugModeState(newState)
+                  toast.success(`Debug 模式已${newState ? '开启' : '关闭'}`)
+                } catch (err) {
+                  toast.error('切换 Debug 模式失败: ' + extractErrorMessage(err))
+                } finally {
+                  setDebugModeLoading(false)
+                }
+              }}
+              disabled={debugModeLoading}
+              title={debugMode ? 'Debug 开启：正常请求也保存到 debug/200OK/' : 'Debug 关闭：仅保存错误请求到 debug/400BAD/'}
+            >
+              {debugModeLoading ? '切换中...' : `Debug: ${debugMode ? 'ON' : 'OFF'}`}
+            </Button>
             <Button
               variant="outline"
               size="sm"

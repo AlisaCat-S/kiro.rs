@@ -24,6 +24,7 @@
 
 mod compressor;
 mod converter;
+pub mod debug_dump;
 mod handlers;
 mod middleware;
 mod router;
