@@ -289,13 +289,19 @@ fn adaptive_shrink_request_body(
     Ok(Some(outcome))
 }
 
-fn map_kiro_provider_error_to_response(request_body: &str, err: Error) -> Response {
+fn map_kiro_provider_error_to_response(request_body: &str, err: Error, model: &str) -> Response {
     if is_input_too_long_error(&err) {
         tracing::warn!(
             kiro_request_body_bytes = request_body.len(),
             error = %err,
             "上游拒绝请求：输入上下文过长（不应重试）"
         );
+        let error_msg = format!("{}", err);
+        let model_str = model.to_string();
+        let body_str = request_body.to_string();
+        tokio::spawn(async move {
+            super::debug_dump::dump_bad_request(&model_str, &body_str, &error_msg).await;
+        });
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse::new(
@@ -311,6 +317,12 @@ fn map_kiro_provider_error_to_response(request_body: &str, err: Error) -> Respon
             error = %err,
             "上游拒绝请求：请求格式错误（可能是空消息内容或其他格式问题）"
         );
+        let error_msg = format!("{}", err);
+        let model_str = model.to_string();
+        let body_str = request_body.to_string();
+        tokio::spawn(async move {
+            super::debug_dump::dump_bad_request(&model_str, &body_str, &error_msg).await;
+        });
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse::new(
@@ -857,7 +869,7 @@ async fn handle_stream_request(
             });
             resp
         }
-        Err(e) => return map_kiro_provider_error_to_response(request_body, e),
+        Err(e) => return map_kiro_provider_error_to_response(request_body, e, model),
     };
 
     // 创建流处理上下文
@@ -1000,7 +1012,7 @@ async fn handle_non_stream_request(
             });
             resp
         }
-        Err(e) => return map_kiro_provider_error_to_response(request_body, e),
+        Err(e) => return map_kiro_provider_error_to_response(request_body, e, model),
     };
 
     // 读取响应体
@@ -1545,7 +1557,7 @@ async fn handle_stream_request_buffered(
             });
             resp
         }
-        Err(e) => return map_kiro_provider_error_to_response(request_body, e),
+        Err(e) => return map_kiro_provider_error_to_response(request_body, e, model),
     };
 
     // 创建缓冲流处理上下文
