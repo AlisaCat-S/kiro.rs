@@ -4,6 +4,7 @@
 //! 1. 简化 `input_schema`：移除非必要字段（description 等），仅保留结构骨架
 //! 2. 按比例截断 `description`：根据超出比例缩短描述，最短保留 50 字符
 
+use super::format_bytes;
 use crate::kiro::model::requests::tool::{InputSchema, Tool as KiroTool, ToolSpecification};
 
 /// 工具定义总大小阈值（20KB）
@@ -22,8 +23,8 @@ pub fn compress_tools_if_needed(tools: &[KiroTool]) -> Vec<KiroTool> {
     }
 
     tracing::info!(
-        total_size,
-        threshold = TOOL_SIZE_THRESHOLD,
+        total_size = %format_bytes(total_size),
+        threshold = %format_bytes(TOOL_SIZE_THRESHOLD),
         tool_count = tools.len(),
         "工具定义超过阈值，开始压缩"
     );
@@ -34,8 +35,8 @@ pub fn compress_tools_if_needed(tools: &[KiroTool]) -> Vec<KiroTool> {
     let size_after_schema = estimate_tools_size(&compressed);
     if size_after_schema <= TOOL_SIZE_THRESHOLD {
         tracing::info!(
-            original_size = total_size,
-            compressed_size = size_after_schema,
+            original_size = %format_bytes(total_size),
+            compressed_size = %format_bytes(size_after_schema),
             "schema 简化后已低于阈值"
         );
         return compressed;
@@ -66,9 +67,9 @@ pub fn compress_tools_if_needed(tools: &[KiroTool]) -> Vec<KiroTool> {
 
     let final_size = estimate_tools_size(&compressed);
     tracing::info!(
-        original_size = total_size,
-        after_schema = size_after_schema,
-        final_size,
+        original_size = %format_bytes(total_size),
+        after_schema = %format_bytes(size_after_schema),
+        final_size = %format_bytes(final_size),
         "工具压缩完成"
     );
 

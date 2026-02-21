@@ -35,3 +35,14 @@ pub mod types;
 mod websearch;
 
 pub use router::create_router_with_provider;
+
+/// 格式化字节数为人类可读形式（B / KiB / MiB）
+pub(crate) fn format_bytes(bytes: usize) -> String {
+    if bytes < 1024 {
+        format!("{} B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KiB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
+    }
+}

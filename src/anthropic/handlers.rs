@@ -33,6 +33,7 @@ const ADAPTIVE_HISTORY_PRESERVE_MESSAGES: usize = 2;
 const ADAPTIVE_MIN_MESSAGE_CONTENT_MAX_CHARS: usize = 8192;
 
 use super::converter::{ConversionError, convert_request};
+use super::format_bytes;
 use super::middleware::AppState;
 use super::stream::{BufferedStreamContext, SseEvent, StreamContext};
 use super::types::{
@@ -698,13 +699,13 @@ pub async fn post_messages(
     if let Some(ref stats) = conversion_result.compression_stats {
         tracing::info!(
             estimated_input_tokens,
-            bytes_saved_total = stats.total_saved(),
-            whitespace_bytes_saved = stats.whitespace_saved,
-            thinking_bytes_saved = stats.thinking_saved,
-            tool_result_bytes_saved = stats.tool_result_saved,
-            tool_use_input_bytes_saved = stats.tool_use_input_saved,
+            bytes_saved_total = %format_bytes(stats.total_saved()),
+            whitespace_bytes_saved = %format_bytes(stats.whitespace_saved),
+            thinking_bytes_saved = %format_bytes(stats.thinking_saved),
+            tool_result_bytes_saved = %format_bytes(stats.tool_result_saved),
+            tool_use_input_bytes_saved = %format_bytes(stats.tool_use_input_saved),
             history_turns_removed = stats.history_turns_removed,
-            history_bytes_saved = stats.history_bytes_saved,
+            history_bytes_saved = %format_bytes(stats.history_bytes_saved),
             "输入压缩完成"
         );
     }
@@ -1379,13 +1380,13 @@ pub async fn post_messages_cc(
     if let Some(ref stats) = conversion_result.compression_stats {
         tracing::info!(
             estimated_input_tokens,
-            bytes_saved_total = stats.total_saved(),
-            whitespace_bytes_saved = stats.whitespace_saved,
-            thinking_bytes_saved = stats.thinking_saved,
-            tool_result_bytes_saved = stats.tool_result_saved,
-            tool_use_input_bytes_saved = stats.tool_use_input_saved,
+            bytes_saved_total = %format_bytes(stats.total_saved()),
+            whitespace_bytes_saved = %format_bytes(stats.whitespace_saved),
+            thinking_bytes_saved = %format_bytes(stats.thinking_saved),
+            tool_result_bytes_saved = %format_bytes(stats.tool_result_saved),
+            tool_use_input_bytes_saved = %format_bytes(stats.tool_use_input_saved),
             history_turns_removed = stats.history_turns_removed,
-            history_bytes_saved = stats.history_bytes_saved,
+            history_bytes_saved = %format_bytes(stats.history_bytes_saved),
             "输入压缩完成"
         );
     }
