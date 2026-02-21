@@ -556,8 +556,8 @@ fn process_message_content(
                                                 sampling_interval_ms = gif.sampling_interval_ms,
                                                 output_format = gif.output_format,
                                                 original_bytes_len =
-                                                    gif.frames[0].original_bytes_len,
-                                                total_final_bytes = total_final_bytes,
+                                                    %format_bytes(gif.frames[0].original_bytes_len),
+                                                total_final_bytes = %format_bytes(total_final_bytes),
                                                 "GIF 已抽帧并重编码"
                                             );
 
