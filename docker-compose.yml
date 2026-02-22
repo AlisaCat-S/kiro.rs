@@ -11,4 +11,5 @@ services:
     volumes:
       - ./config.json:/app/config/config.json
       - ./credentials.json:/app/config/credentials.json
+      - ./debug:/app/debug
     restart: unless-stopped
