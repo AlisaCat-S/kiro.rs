@@ -2,21 +2,26 @@ name: Build and Push Docker Images
 
 on:
   push:
-    tags:
-      - 'v*'
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version tag for Docker images (e.g., 2025.12.1)'
-        required: true
-        default: '2026.1.1'
 
 permissions:
   contents: read
   packages: write
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Generate version
+        id: version
+        run: |
+          VERSION=$(TZ='Asia/Shanghai' date +'v%Y.%-m.%-d-%-H.%M')
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
   build:
+    needs: version
     runs-on: ${{ matrix.runner }}
 
     strategy:
@@ -47,7 +52,6 @@ jobs:
       - id: lower-repo-and-owner
         run: |
           echo "repo=${GITHUB_REPOSITORY@L}" >> $GITHUB_OUTPUT
-          echo "owner=${GITHUB_REPOSITORY_OWNER@L}" >> $GITHUB_OUTPUT
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -58,13 +62,13 @@ jobs:
           cache-to: type=gha,mode=max
           push: true
           provenance: false
-          tags: ghcr.io/${{ steps.lower-repo-and-owner.outputs.repo }}:${{ github.event.inputs.version || github.ref_name }}-${{ matrix.arch }}
+          tags: ghcr.io/${{ steps.lower-repo-and-owner.outputs.repo }}:${{ needs.version.outputs.version }}-${{ matrix.arch }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.description=Kiro.rs Docker Image
 
   manifest:
-    needs: build
+    needs: [version, build]
     runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
@@ -77,11 +81,10 @@ jobs:
       - id: lower-repo-and-owner
         run: |
           echo "repo=${GITHUB_REPOSITORY@L}" >> $GITHUB_OUTPUT
-          echo "owner=${GITHUB_REPOSITORY_OWNER@L}" >> $GITHUB_OUTPUT
 
       - name: Create and push multi-arch manifest
         run: |
-          VERSION="${{ github.event.inputs.version || github.ref_name }}"
+          VERSION="${{ needs.version.outputs.version }}"
           IMAGE="ghcr.io/${{ steps.lower-repo-and-owner.outputs.repo }}"
 
           # Create manifest for version tag
