@@ -32,8 +32,8 @@
 - **Anthropic API 兼容**: 完整支持 Anthropic Claude API 格式
 - **流式响应**: 支持 SSE (Server-Sent Events) 流式输出
 - **Token 自动刷新**: 自动管理和刷新 OAuth Token
-- **多凭据支持**: 支持配置多个凭据，按优先级自动故障转移
-- **负载均衡**: 支持 `priority`（按优先级）和 `balanced`（均衡分配）两种模式
+- **多凭据支持**: 支持配置多个凭据，按优先级分组，组内 least-used 负载均衡，跨组自动故障转移
+- **凭据选择策略**: 优先选择最高优先级组 → 组内按使用次数最少 → 余额最多 → round-robin 轮询
 - **智能重试**: 单凭据最多重试 3 次，单请求最多重试 9 次
 - **凭据回写**: 多凭据格式下自动回写刷新后的 Token
 - **Thinking 模式**: 支持 Claude 的 extended thinking 功能
@@ -187,7 +187,7 @@ docker-compose up
 | `proxyUsername` | string | - | 代理用户名 |
 | `proxyPassword` | string | - | 代理密码 |
 | `adminApiKey` | string | - | Admin API 密钥，配置后启用凭据管理 API 和 Web 管理界面 |
-| `loadBalancingMode` | string | `priority` | 负载均衡模式：`priority`（按优先级）或 `balanced`（均衡分配） |
+| `loadBalancingMode` | string | `priority` | （保留字段）凭据选择策略已统一为：优先级分组 → 组内 least-used → 余额最多 → round-robin |
 
 完整配置示例：
 

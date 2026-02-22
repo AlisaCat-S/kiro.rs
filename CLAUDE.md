@@ -64,7 +64,7 @@ kiro-rs/
 ## 核心设计模式
 
 1. **Provider Pattern** - `kiro/provider.rs`: 统一的 API 提供者接口，处理请求转发和重试
-2. **Multi-Token Manager** - `kiro/token_manager.rs`: 多凭据管理，按优先级故障转移，自动刷新 Token
+2. **Multi-Token Manager** - `kiro/token_manager.rs`: 多凭据管理，同优先级组内 least-used 负载均衡，跨优先级故障转移，自动刷新 Token
 3. **Protocol Converter** - `anthropic/converter.rs`: Anthropic ↔ Kiro 双向协议转换
 4. **Event Stream Parser** - `kiro/parser/`: AWS Event Stream 二进制协议解析
 
