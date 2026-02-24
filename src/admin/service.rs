@@ -226,6 +226,7 @@ impl AdminService {
             proxy_url: req.proxy_url,
             proxy_username: req.proxy_username,
             proxy_password: req.proxy_password,
+            disabled: false, // 新添加的凭据默认启用
         };
 
         // 调用 token_manager 添加凭据
@@ -554,6 +555,7 @@ impl AdminService {
             proxy_url: None,
             proxy_username: None,
             proxy_password: None,
+            disabled: false,
         };
 
         match self.token_manager.add_credential(new_cred).await {

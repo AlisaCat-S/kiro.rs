@@ -800,11 +800,15 @@ impl MultiTokenManager {
                 let refresh_token_hash = cred.refresh_token.as_deref().map(sha256_hex);
                 CredentialEntry {
                     id,
-                    credentials: cred,
+                    credentials: cred.clone(),
                     failure_count: 0,
-                    disabled: false,
+                    disabled: cred.disabled, // 从配置文件读取 disabled 状态
                     auto_heal_reason: None,
-                    disable_reason: None,
+                    disable_reason: if cred.disabled {
+                        Some(DisableReason::Manual)
+                    } else {
+                        None
+                    },
                     fingerprint,
                     success_count: 0,
                     last_used_at: None,
@@ -1651,6 +1655,8 @@ impl MultiTokenManager {
                 .map(|e| {
                     let mut cred = e.credentials.clone();
                     cred.canonicalize_auth_method();
+                    // 同步 disabled 状态到凭据对象
+                    cred.disabled = e.disabled;
                     cred
                 })
                 .collect();
