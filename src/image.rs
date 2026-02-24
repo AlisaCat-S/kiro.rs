@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use crate::model::config::CompressionConfig;
 
-const GIF_MAX_OUTPUT_FRAMES: usize = 8;
+const GIF_MAX_OUTPUT_FRAMES: usize = 10;
 const GIF_MAX_FPS: usize = 5;
 const GIF_MIN_FRAME_DELAY: Duration = Duration::from_millis(10);
 const GIF_FRAME_OUTPUT_FORMAT: &str = "jpeg";
@@ -557,8 +557,8 @@ mod tests {
         let res = process_gif_frames(&base64_data, &config, 1).unwrap();
 
         assert_eq!(res.duration_ms, 8000);
-        assert_eq!(res.sampling_interval_ms, 500);
-        assert_eq!(res.frames.len(), 16);
+        assert_eq!(res.sampling_interval_ms, 1000);
+        assert_eq!(res.frames.len(), 8);
         assert!(res.frames.len() <= GIF_MAX_OUTPUT_FRAMES);
         assert_eq!(res.output_format, GIF_FRAME_OUTPUT_FORMAT);
     }
@@ -591,8 +591,8 @@ mod tests {
         let res = process_gif_frames(&base64_data, &config, 1).unwrap();
 
         assert_eq!(res.duration_ms, 4000);
-        assert_eq!(res.sampling_interval_ms, 200);
-        assert_eq!(res.frames.len(), 20);
+        assert_eq!(res.sampling_interval_ms, 500);
+        assert_eq!(res.frames.len(), 8);
         assert!(res.frames.len() <= GIF_MAX_OUTPUT_FRAMES);
         assert_eq!(res.output_format, GIF_FRAME_OUTPUT_FORMAT);
     }
