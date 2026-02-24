@@ -1666,6 +1666,7 @@ impl MultiTokenManager {
         // 原子写入：先写临时文件，再 rename 替换目标文件
         // rename 在同一文件系统上是原子操作，避免进程崩溃导致凭据文件损坏
         // 解析 symlink 以确保 rename 写入真实目标（而非替换 symlink 本身）
+        // 注意：Docker volume mount 等跨文件系统场景下 rename 会失败，此时 fallback 到直接写入
         let real_path = resolve_symlink_target(&path);
         let tmp_path = real_path.with_extension("json.tmp");
 
@@ -1676,9 +1677,9 @@ impl MultiTokenManager {
             std::fs::write(&tmp_path, &json)
                 .with_context(|| format!("写入临时凭据文件失败: {:?}", tmp_path))?;
 
-            if let Some(perms) = original_perms {
+            if let Some(ref perms) = original_perms {
                 // best-effort：权限复制失败不阻塞回写
-                let _ = std::fs::set_permissions(&tmp_path, perms);
+                let _ = std::fs::set_permissions(&tmp_path, perms.clone());
             }
 
             // 跨平台原子替换：Windows 上 rename 无法覆盖已存在文件，需先删除
@@ -1688,10 +1689,19 @@ impl MultiTokenManager {
                     .with_context(|| format!("删除旧凭据文件失败: {:?}", real_path))?;
             }
 
-            std::fs::rename(&tmp_path, &real_path).with_context(|| {
-                format!("原子替换凭据文件失败: {:?} -> {:?}", tmp_path, real_path)
-            })?;
-            Ok(())
+            match std::fs::rename(&tmp_path, &real_path) {
+                Ok(()) => Ok(()),
+                Err(_rename_err) => {
+                    // rename 失败（常见于 Docker volume mount 跨文件系统），fallback 到直接写入
+                    let _ = std::fs::remove_file(&tmp_path);
+                    std::fs::write(&real_path, &json)
+                        .with_context(|| format!("直接写入凭据文件失败: {:?}", real_path))?;
+                    if let Some(perms) = original_perms {
+                        let _ = std::fs::set_permissions(&real_path, perms);
+                    }
+                    Ok(())
+                }
+            }
         };
 
         if tokio::runtime::Handle::try_current().is_ok() {
@@ -1774,12 +1784,17 @@ impl MultiTokenManager {
         match serde_json::to_string_pretty(&stats) {
             Ok(json) => {
                 // 原子写入：先写临时文件，再重命名
+                // rename 失败时（如 Docker volume mount）fallback 到直接写入
                 let tmp_path = path.with_extension("json.tmp");
-                match std::fs::write(&tmp_path, json) {
+                match std::fs::write(&tmp_path, &json) {
                     Ok(_) => {
-                        if let Err(e) = std::fs::rename(&tmp_path, &path) {
-                            tracing::warn!("原子重命名统计缓存失败: {}", e);
+                        if let Err(_rename_err) = std::fs::rename(&tmp_path, &path) {
                             let _ = std::fs::remove_file(&tmp_path);
+                            if let Err(e) = std::fs::write(&path, &json) {
+                                tracing::warn!("直接写入统计缓存失败: {}", e);
+                            } else {
+                                *self.last_stats_save_at.lock() = Some(Instant::now());
+                            }
                         } else {
                             *self.last_stats_save_at.lock() = Some(Instant::now());
                             self.stats_dirty.store(false, Ordering::Relaxed);
