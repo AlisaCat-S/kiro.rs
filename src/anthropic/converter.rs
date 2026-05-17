@@ -370,7 +370,10 @@ fn process_message_content(
                         }
                         "tool_result" => {
                             if let Some(tool_use_id) = block.tool_use_id {
-                                let result_content = extract_tool_result_content(&block.content);
+                                let result_content =
+                                    extract_tool_result_content(&block.content);
+                                // 从 tool_result 的 content 中提取图片
+                                extract_tool_result_images(&block.content, &mut images);
                                 let is_error = block.is_error.unwrap_or(false);
 
                                 let mut result = if is_error {
@@ -424,6 +427,34 @@ fn extract_tool_result_content(content: &Option<serde_json::Value>) -> String {
         }
         Some(v) => v.to_string(),
         None => String::new(),
+    }
+}
+
+/// 从 tool_result 的 content 中提取图片
+///
+/// tool_result 的 content 可能包含 image 类型的内容块（例如 Claude Code 的 Read tool
+/// 读取图片文件后返回的结果）。此函数将这些图片提取出来，追加到 images 列表中，
+/// 使其能够被正确传递给上游模型。
+fn extract_tool_result_images(content: &Option<serde_json::Value>, images: &mut Vec<KiroImage>) {
+    if let Some(serde_json::Value::Array(arr)) = content {
+        for item in arr {
+            // 检查是否为 image 类型的 content block
+            if item.get("type").and_then(|v| v.as_str()) == Some("image") {
+                if let Some(source) = item.get("source") {
+                    let media_type = source
+                        .get("media_type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let data = source.get("data").and_then(|v| v.as_str()).unwrap_or("");
+
+                    if !data.is_empty() {
+                        if let Some(format) = get_image_format(media_type) {
+                            images.push(KiroImage::from_base64(format, data.to_string()));
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
