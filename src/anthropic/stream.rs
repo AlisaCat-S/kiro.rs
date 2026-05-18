@@ -1135,8 +1135,8 @@ impl StreamContext {
             events.extend(self.create_text_delta_events(" "));
         }
 
-        // 使用基于用户原始请求的估算值，不使用 contextUsageEvent 的值
-        let final_input_tokens = self.input_tokens;
+        // 使用从 contextUsageEvent 计算的 input_tokens，如果没有则使用估算值
+        let final_input_tokens = self.context_input_tokens.unwrap_or(self.input_tokens);
 
         // 生成最终事件
         events.extend(
@@ -1220,9 +1220,11 @@ impl BufferedStreamContext {
         let final_events = self.inner.generate_final_events();
         self.event_buffer.extend(final_events);
 
-        // 获取 input_tokens - 始终使用基于用户原始请求的估算值
-        // 不使用 contextUsageEvent 的值，因为它包含了注入的 system prompt 的 token
-        let final_input_tokens = self.estimated_input_tokens;
+        // 使用从 contextUsageEvent 计算的 input_tokens，如果没有则使用估算值
+        let final_input_tokens = self
+            .inner
+            .context_input_tokens
+            .unwrap_or(self.estimated_input_tokens);
 
         // 更正 message_start 事件中的 input_tokens
         for event in &mut self.event_buffer {

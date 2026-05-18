@@ -559,6 +559,7 @@ async fn handle_non_stream_request(
     let mut tool_uses: Vec<serde_json::Value> = Vec::new();
     let mut has_tool_use = false;
     let mut stop_reason = "end_turn".to_string();
+    let mut context_input_tokens: Option<i32> = None;
 
     // 收集工具调用的增量 JSON
     let mut tool_json_buffers: std::collections::HashMap<String, String> =
@@ -617,6 +618,7 @@ async fn handle_non_stream_request(
                                 * (window_size as f64)
                                 / 100.0)
                                 as i32;
+                            context_input_tokens = Some(actual_input_tokens);
                             // 上下文使用量达到 100% 时，设置 stop_reason 为 model_context_window_exceeded
                             if context_usage.context_usage_percentage >= 100.0 {
                                 stop_reason = "model_context_window_exceeded".to_string();
@@ -680,9 +682,8 @@ async fn handle_non_stream_request(
     // 估算输出 tokens
     let output_tokens = token::estimate_output_tokens(&content);
 
-    // 使用基于用户原始请求的估算值，不使用 contextUsageEvent 的值
-    // （contextUsageEvent 包含注入的 system prompt 的 token，会导致数值偏高）
-    let final_input_tokens = input_tokens;
+    // 使用从 contextUsageEvent 计算的 input_tokens，如果没有则使用估算值
+    let final_input_tokens = context_input_tokens.unwrap_or(input_tokens);
 
     // 构建 Anthropic 响应 - 使用有序 Map 确保 key 顺序与官方一致
     let msg_id = generate_msg_id();
