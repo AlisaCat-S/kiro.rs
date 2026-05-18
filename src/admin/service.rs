@@ -424,8 +424,11 @@ impl AdminService {
                 "currentMessage": {
                     "userInputMessage": {
                         "content": "Hi",
-                        "modelId": "claude-opus-4-6",
-                        "userInputMessageContext": {},
+                        "modelId": "claude-opus-4.6",
+                        "userInputMessageContext": {
+                            "toolResults": [],
+                            "tools": []
+                        },
                         "origin": "AI_EDITOR"
                     }
                 },

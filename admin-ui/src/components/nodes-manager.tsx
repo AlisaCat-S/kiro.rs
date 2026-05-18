@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { toast } from 'sonner'
-import { Plus, Trash2, RefreshCw, Download, Upload, FlaskConical, Globe, Server, ArrowUpDown, Wallet, Power, Send, Activity } from 'lucide-react'
+import { Plus, Trash2, RefreshCw, Download, Upload, FlaskConical, Globe, Server, ArrowUpDown, Wallet, Power, Send, Activity, RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -24,6 +24,8 @@ import {
   getRemoteCredentialBalance,
   setRemoteCredentialDisabled,
   resetRemoteCredentialFailure,
+  forceRefreshToken,
+  forceRefreshRemoteToken,
 } from '@/api/credentials'
 import type { RemoteNode, CredentialsStatusResponse, CredentialStatusItem, BalanceResponse, TestCredentialResponse } from '@/types/api'
 
@@ -197,7 +199,16 @@ export function NodesManager() {
         toast.error(`凭证 #${credId} 测试失败: ${result.error}`)
       }
     } catch (e: unknown) {
-      toast.error(`测试请求失败: ${e instanceof Error ? e.message : '未知错误'}`)
+      if (e && typeof e === 'object' && 'response' in e) {
+        const resp = (e as { response?: { status?: number } }).response
+        if (resp?.status === 404) {
+          toast.error(`远程节点不支持测试功能，请升级到最新版本`)
+        } else {
+          toast.error(`测试请求失败: ${e instanceof Error ? e.message : '未知错误'}`)
+        }
+      } else {
+        toast.error(`测试请求失败: ${e instanceof Error ? e.message : '未知错误'}`)
+      }
     } finally {
       setTestingId(null)
     }
@@ -254,6 +265,68 @@ export function NodesManager() {
       else loadRemoteNodes()
     } catch (e: unknown) {
       toast.error(`重置失败: ${e instanceof Error ? e.message : '未知错误'}`)
+    }
+  }
+
+  const handleRefreshToken = async (node: NodeWithStatus, credId: number) => {
+    const key = `${node.id}-${credId}`
+    setTestingId(key)
+    try {
+      if (node.id === 'local') {
+        await forceRefreshToken(credId)
+      } else {
+        await forceRefreshRemoteToken(node.baseUrl, node.adminKey, credId)
+      }
+      toast.success(`凭证 #${credId} Token 已刷新`)
+      if (node.id === 'local') loadLocalNode()
+      else loadRemoteNodes()
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : '未知错误'
+      if (msg.includes('400') || msg.includes('API Key')) {
+        toast.error(`凭证 #${credId} 不支持刷新 (API Key 类型)`)
+      } else {
+        toast.error(`刷新失败: ${msg}`)
+      }
+    } finally {
+      setTestingId(null)
+    }
+  }
+
+  const handleBatchBalance = async (node: NodeWithStatus) => {
+    if (!node.credentials) return
+    const creds = node.credentials.credentials
+    if (creds.length === 0) return
+    let loaded = 0
+    for (const cred of creds) {
+      const key = `${node.id}-${cred.id}`
+      try {
+        let balance: BalanceResponse
+        if (node.id === 'local') {
+          balance = await getCredentialBalance(cred.id)
+        } else {
+          balance = await getRemoteCredentialBalance(node.baseUrl, node.adminKey, cred.id)
+        }
+        setBalanceMap(prev => new Map(prev).set(key, balance))
+        loaded++
+      } catch {
+        // skip failed ones
+      }
+    }
+    toast.success(`已查询 ${loaded}/${creds.length} 个凭证余额`)
+  }
+
+  const handleRefreshNode = async (node: NodeWithStatus) => {
+    if (node.id === 'local') {
+      await loadLocalNode()
+    } else {
+      try {
+        const creds = await getRemoteCredentials(node.baseUrl, node.adminKey)
+        setNodes(prev => prev.map(n => n.id === node.id ? { ...n, status: 'online' as const, credentials: creds } : n))
+        toast.success(`${node.name} 状态已刷新`)
+      } catch {
+        setNodes(prev => prev.map(n => n.id === node.id ? { ...n, status: 'offline' as const } : n))
+        toast.error(`${node.name} 连接失败`)
+      }
     }
   }
 
@@ -500,7 +573,10 @@ export function NodesManager() {
           onGetBalance={handleGetBalance}
           onToggleDisabled={handleToggleDisabled}
           onResetFailure={handleResetFailure}
+          onRefreshToken={handleRefreshToken}
+          onRefreshNode={handleRefreshNode}
           onBatchTest={handleBatchTest}
+          onBatchBalance={handleBatchBalance}
           onMigrate={(node, credIds) => setMigrateDialog({ from: node, credIds })}
           batchTesting={batchTesting}
           batchTestProgress={batchTestProgress}
@@ -527,7 +603,10 @@ interface NodeCardProps {
   onGetBalance: (node: NodeWithStatus, credId: number) => void
   onToggleDisabled: (node: NodeWithStatus, credId: number, currentDisabled: boolean) => void
   onResetFailure: (node: NodeWithStatus, credId: number) => void
+  onRefreshToken: (node: NodeWithStatus, credId: number) => void
+  onRefreshNode: (node: NodeWithStatus) => void
   onBatchTest: (node: NodeWithStatus) => void
+  onBatchBalance: (node: NodeWithStatus) => void
   onMigrate: (node: NodeWithStatus, credIds: number[]) => void
   batchTesting: string | null
   batchTestProgress: { current: number; total: number; passed: number; failed: number }
@@ -536,7 +615,7 @@ interface NodeCardProps {
 function NodeCard({
   node, sortCredentials, SortHeader, testingId, loadingBalance, togglingId, balanceMap,
   onExport, onImport, onRemove, onTest, onGetBalance, onToggleDisabled, onResetFailure,
-  onBatchTest, onMigrate, batchTesting, batchTestProgress,
+  onRefreshToken, onRefreshNode, onBatchTest, onBatchBalance, onMigrate, batchTesting, batchTestProgress,
 }: NodeCardProps) {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const sorted = useMemo(
@@ -564,11 +643,27 @@ function NodeCard({
                 <Button
                   variant="ghost"
                   size="sm"
+                  onClick={() => onRefreshNode(node)}
+                  title="刷新节点状态"
+                >
+                  <RefreshCw className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
                   onClick={() => onBatchTest(node)}
                   disabled={batchTesting === node.id}
                   title="批量测试所有凭证"
                 >
                   <FlaskConical className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onBatchBalance(node)}
+                  title="批量查询所有余额"
+                >
+                  <Wallet className="h-4 w-4" />
                 </Button>
                 {selectedIds.size > 0 && (
                   <Button
@@ -706,6 +801,18 @@ function NodeCard({
                           >
                             <Power className={`h-3.5 w-3.5 ${cred.disabled ? 'text-green-500' : 'text-destructive'}`} />
                           </Button>
+                          {cred.authMethod === 'social' && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 px-2"
+                              disabled={testingId === key}
+                              onClick={() => onRefreshToken(node, cred.id)}
+                              title="刷新 Token"
+                            >
+                              <RotateCcw className="h-3.5 w-3.5" />
+                            </Button>
+                          )}
                           {cred.failureCount > 0 && (
                             <Button
                               variant="ghost"

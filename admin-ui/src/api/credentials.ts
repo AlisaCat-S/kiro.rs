@@ -212,3 +212,10 @@ export async function resetRemoteCredentialFailure(baseUrl: string, adminKey: st
   const { data } = await remote.post<SuccessResponse>(`/credentials/${id}/reset`)
   return data
 }
+
+// 强制刷新远程节点凭据 Token
+export async function forceRefreshRemoteToken(baseUrl: string, adminKey: string, id: number): Promise<SuccessResponse> {
+  const remote = createRemoteApi(baseUrl, adminKey)
+  const { data } = await remote.post<SuccessResponse>(`/credentials/${id}/refresh`)
+  return data
+}
