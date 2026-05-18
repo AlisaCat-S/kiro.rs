@@ -46,7 +46,6 @@ jobs:
     runs-on: ${{ matrix.runner }}
     outputs:
       version: ${{ steps.version.outputs.version }}
-      is_beta: ${{ steps.version.outputs.is_beta }}
 
     strategy:
       fail-fast: false
@@ -76,14 +75,10 @@ jobs:
               INPUT_VERSION="$(date +%Y.%-m.%-d)"
             fi
             echo "version=${INPUT_VERSION}" >> $GITHUB_OUTPUT
-            echo "is_beta=false" >> $GITHUB_OUTPUT
           elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
             echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
-            echo "is_beta=false" >> $GITHUB_OUTPUT
           else
-            SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-6)
-            echo "version=beta-${SHORT_SHA}" >> $GITHUB_OUTPUT
-            echo "is_beta=true" >> $GITHUB_OUTPUT
+            echo "version=$(date +%Y.%-m.%-d)" >> $GITHUB_OUTPUT
           fi
 
       - name: Set up Docker Buildx
@@ -128,7 +123,6 @@ jobs:
       - name: Create and push multi-arch manifest
         run: |
           VERSION="${{ needs.build.outputs.version }}"
-          IS_BETA="${{ needs.build.outputs.is_beta }}"
           IMAGE="ghcr.io/${{ steps.owner.outputs.name }}/kiro-rs"
 
           # Create manifest for version tag
@@ -137,13 +131,8 @@ jobs:
             ${IMAGE}:${VERSION}-arm64
           docker manifest push ${IMAGE}:${VERSION}
 
-          # Create manifest for latest/beta alias tag
-          if [ "${IS_BETA}" = "true" ]; then
-            ALIAS_TAG="beta"
-          else
-            ALIAS_TAG="latest"
-          fi
-          docker manifest create ${IMAGE}:${ALIAS_TAG} \
+          # Always tag as latest
+          docker manifest create ${IMAGE}:latest \
             ${IMAGE}:${VERSION}-amd64 \
             ${IMAGE}:${VERSION}-arm64
-          docker manifest push ${IMAGE}:${ALIAS_TAG}
+          docker manifest push ${IMAGE}:latest

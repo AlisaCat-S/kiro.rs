@@ -84,23 +84,22 @@ jobs:
           elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
             echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
           else
-            SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-6)
-            echo "version=beta-${SHORT_SHA}" >> $GITHUB_OUTPUT
+            echo "version=$(date +%Y.%-m.%-d)" >> $GITHUB_OUTPUT
           fi
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 11
 
       - name: Install admin-ui dependencies
         working-directory: admin-ui
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Build admin-ui
         working-directory: admin-ui
