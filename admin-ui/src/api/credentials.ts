@@ -219,3 +219,24 @@ export async function forceRefreshRemoteToken(baseUrl: string, adminKey: string,
   const { data } = await remote.post<SuccessResponse>(`/credentials/${id}/refresh`)
   return data
 }
+
+// 重置远程节点单个凭据成功次数
+export async function resetRemoteSuccessCount(baseUrl: string, adminKey: string, id: number): Promise<SuccessResponse> {
+  const remote = createRemoteApi(baseUrl, adminKey)
+  const { data } = await remote.post<SuccessResponse>(`/credentials/${id}/reset-stats`)
+  return data
+}
+
+// 重置远程节点所有凭据成功次数
+export async function resetRemoteAllSuccessCount(baseUrl: string, adminKey: string): Promise<SuccessResponse> {
+  const remote = createRemoteApi(baseUrl, adminKey)
+  const { data } = await remote.post<SuccessResponse>('/credentials/reset-stats')
+  return data
+}
+
+// 删除远程节点凭据
+export async function deleteRemoteCredential(baseUrl: string, adminKey: string, id: number): Promise<SuccessResponse> {
+  const remote = createRemoteApi(baseUrl, adminKey)
+  const { data } = await remote.delete<SuccessResponse>(`/credentials/${id}`)
+  return data
+}

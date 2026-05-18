@@ -26,6 +26,12 @@ import {
   resetRemoteCredentialFailure,
   forceRefreshToken,
   forceRefreshRemoteToken,
+  resetSuccessCount,
+  resetRemoteSuccessCount,
+  resetAllSuccessCount,
+  resetRemoteAllSuccessCount,
+  deleteCredential as deleteLocalCredential,
+  deleteRemoteCredential,
 } from '@/api/credentials'
 import type { RemoteNode, CredentialsStatusResponse, CredentialStatusItem, BalanceResponse, TestCredentialResponse } from '@/types/api'
 
@@ -330,6 +336,52 @@ export function NodesManager() {
     }
   }
 
+  const handleResetSuccessCount = async (node: NodeWithStatus, credId: number) => {
+    try {
+      if (node.id === 'local') {
+        await resetSuccessCount(credId)
+      } else {
+        await resetRemoteSuccessCount(node.baseUrl, node.adminKey, credId)
+      }
+      toast.success(`凭证 #${credId} 成功次数已重置`)
+      if (node.id === 'local') loadLocalNode()
+      else loadRemoteNodes()
+    } catch (e: unknown) {
+      toast.error(`重置失败: ${e instanceof Error ? e.message : '未知错误'}`)
+    }
+  }
+
+  const handleResetAllSuccessCount = async (node: NodeWithStatus) => {
+    try {
+      if (node.id === 'local') {
+        await resetAllSuccessCount()
+      } else {
+        await resetRemoteAllSuccessCount(node.baseUrl, node.adminKey)
+      }
+      toast.success(`${node.name} 所有凭证成功次数已重置`)
+      if (node.id === 'local') loadLocalNode()
+      else loadRemoteNodes()
+    } catch (e: unknown) {
+      toast.error(`重置失败: ${e instanceof Error ? e.message : '未知错误'}`)
+    }
+  }
+
+  const handleDeleteCredential = async (node: NodeWithStatus, credId: number) => {
+    if (!confirm(`确认删除凭证 #${credId}？此操作不可撤销。`)) return
+    try {
+      if (node.id === 'local') {
+        await deleteLocalCredential(credId)
+      } else {
+        await deleteRemoteCredential(node.baseUrl, node.adminKey, credId)
+      }
+      toast.success(`凭证 #${credId} 已删除`)
+      if (node.id === 'local') loadLocalNode()
+      else loadRemoteNodes()
+    } catch (e: unknown) {
+      toast.error(`删除失败: ${e instanceof Error ? e.message : '未知错误'}`)
+    }
+  }
+
   // 批量测试某节点所有凭证
   const handleBatchTest = async (node: NodeWithStatus) => {
     if (!node.credentials) return
@@ -577,6 +629,9 @@ export function NodesManager() {
           onRefreshNode={handleRefreshNode}
           onBatchTest={handleBatchTest}
           onBatchBalance={handleBatchBalance}
+          onResetSuccessCount={handleResetSuccessCount}
+          onResetAllSuccessCount={handleResetAllSuccessCount}
+          onDeleteCredential={handleDeleteCredential}
           onMigrate={(node, credIds) => setMigrateDialog({ from: node, credIds })}
           batchTesting={batchTesting}
           batchTestProgress={batchTestProgress}
@@ -607,6 +662,9 @@ interface NodeCardProps {
   onRefreshNode: (node: NodeWithStatus) => void
   onBatchTest: (node: NodeWithStatus) => void
   onBatchBalance: (node: NodeWithStatus) => void
+  onResetSuccessCount: (node: NodeWithStatus, credId: number) => void
+  onResetAllSuccessCount: (node: NodeWithStatus) => void
+  onDeleteCredential: (node: NodeWithStatus, credId: number) => void
   onMigrate: (node: NodeWithStatus, credIds: number[]) => void
   batchTesting: string | null
   batchTestProgress: { current: number; total: number; passed: number; failed: number }
@@ -615,7 +673,8 @@ interface NodeCardProps {
 function NodeCard({
   node, sortCredentials, SortHeader, testingId, loadingBalance, togglingId, balanceMap,
   onExport, onImport, onRemove, onTest, onGetBalance, onToggleDisabled, onResetFailure,
-  onRefreshToken, onRefreshNode, onBatchTest, onBatchBalance, onMigrate, batchTesting, batchTestProgress,
+  onRefreshToken, onRefreshNode, onBatchTest, onBatchBalance, onResetSuccessCount,
+  onResetAllSuccessCount, onDeleteCredential, onMigrate, batchTesting, batchTestProgress,
 }: NodeCardProps) {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const sorted = useMemo(
@@ -664,6 +723,14 @@ function NodeCard({
                   title="批量查询所有余额"
                 >
                   <Wallet className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onResetAllSuccessCount(node)}
+                  title="重置所有成功次数"
+                >
+                  <RotateCcw className="h-4 w-4" />
                 </Button>
                 {selectedIds.size > 0 && (
                   <Button
@@ -822,6 +889,28 @@ function NodeCard({
                               title="重置失败计数"
                             >
                               <RefreshCw className="h-3.5 w-3.5" />
+                            </Button>
+                          )}
+                          {cred.successCount > 0 && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 px-2"
+                              onClick={() => onResetSuccessCount(node, cred.id)}
+                              title="重置成功次数"
+                            >
+                              <RotateCcw className="h-3.5 w-3.5 text-muted-foreground" />
+                            </Button>
+                          )}
+                          {cred.disabled && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 px-2"
+                              onClick={() => onDeleteCredential(node, cred.id)}
+                              title="删除凭证"
+                            >
+                              <Trash2 className="h-3.5 w-3.5 text-destructive" />
                             </Button>
                           )}
                         </div>
