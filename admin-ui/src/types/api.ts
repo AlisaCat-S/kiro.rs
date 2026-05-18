@@ -87,3 +87,42 @@ export interface AddCredentialResponse {
   credentialId: number
   email?: string
 }
+
+// 导入凭据请求
+export interface ImportCredentialsRequest {
+  credentials: AddCredentialRequest[]
+}
+
+// 导入凭据响应
+export interface ImportCredentialsResponse {
+  success: boolean
+  imported: number
+  skipped: number
+  failed: number
+  details: ImportItemResult[]
+}
+
+export interface ImportItemResult {
+  index: number
+  status: 'imported' | 'skipped' | 'failed'
+  credentialId?: number
+  error?: string
+}
+
+// 凭证测试响应
+export interface TestCredentialResponse {
+  success: boolean
+  latencyMs?: number
+  error?: string
+  responsePreview?: string
+}
+
+// 多节点管理
+export interface RemoteNode {
+  id: string
+  name: string
+  baseUrl: string
+  adminKey: string
+  status?: 'online' | 'offline' | 'unknown'
+  lastChecked?: string
+}

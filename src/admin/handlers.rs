@@ -9,8 +9,8 @@ use axum::{
 use super::{
     middleware::AdminState,
     types::{
-        AddCredentialRequest, SetDisabledRequest, SetLoadBalancingModeRequest, SetPriorityRequest,
-        SuccessResponse,
+        AddCredentialRequest, ImportCredentialsRequest, SetDisabledRequest,
+        SetLoadBalancingModeRequest, SetPriorityRequest, SuccessResponse,
     },
 };
 
@@ -165,6 +165,35 @@ pub async fn set_load_balancing_mode(
     Json(payload): Json<SetLoadBalancingModeRequest>,
 ) -> impl IntoResponse {
     match state.service.set_load_balancing_mode(payload) {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+/// GET /api/admin/credentials/export
+/// 导出所有凭据（含明文 token）
+pub async fn export_credentials(State(state): State<AdminState>) -> impl IntoResponse {
+    let credentials = state.service.export_credentials();
+    Json(credentials)
+}
+
+/// POST /api/admin/credentials/import
+/// 批量导入凭据
+pub async fn import_credentials(
+    State(state): State<AdminState>,
+    Json(payload): Json<ImportCredentialsRequest>,
+) -> impl IntoResponse {
+    let response = state.service.import_credentials(payload).await;
+    Json(response)
+}
+
+/// POST /api/admin/credentials/:id/test
+/// 测试凭据可用性
+pub async fn test_credential(
+    State(state): State<AdminState>,
+    Path(id): Path<u64>,
+) -> impl IntoResponse {
+    match state.service.test_credential(id).await {
         Ok(response) => Json(response).into_response(),
         Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
     }

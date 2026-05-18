@@ -127,6 +127,7 @@ async fn main() {
     }
 
     let endpoint_names: Vec<String> = endpoints.keys().cloned().collect();
+    let endpoints_for_admin = endpoints.clone();
 
     // 创建 MultiTokenManager 和 KiroProvider
     let token_manager = MultiTokenManager::new(
@@ -178,7 +179,12 @@ async fn main() {
             anthropic_app
         } else {
             let admin_service =
-                admin::AdminService::new(token_manager.clone(), endpoint_names.clone());
+                admin::AdminService::new(
+                    token_manager.clone(),
+                    endpoint_names.clone(),
+                    endpoints_for_admin.clone(),
+                    config.default_endpoint.clone(),
+                );
             let admin_state = admin::AdminState::new(admin_key, admin_service);
             let admin_app = admin::create_admin_router(admin_state);
 

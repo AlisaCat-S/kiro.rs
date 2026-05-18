@@ -257,3 +257,62 @@ impl AdminErrorResponse {
         Self::new("internal_error", message)
     }
 }
+
+// ============ 凭证导入 ============
+
+/// 批量导入凭据请求
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportCredentialsRequest {
+    /// 凭据数组
+    pub credentials: Vec<AddCredentialRequest>,
+}
+
+/// 批量导入凭据响应
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportCredentialsResponse {
+    pub success: bool,
+    /// 成功导入数量
+    pub imported: u32,
+    /// 跳过数量（重复）
+    pub skipped: u32,
+    /// 失败数量
+    pub failed: u32,
+    /// 各条目的详细结果
+    pub details: Vec<ImportItemResult>,
+}
+
+/// 单条导入结果
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportItemResult {
+    /// 序号（从 0 开始）
+    pub index: u32,
+    /// 状态: "imported" / "skipped" / "failed"
+    pub status: String,
+    /// 新凭据 ID（仅 imported 时有值）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential_id: Option<u64>,
+    /// 错误信息（仅 failed 时有值）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+// ============ 凭证测试 ============
+
+/// 凭证测试响应
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestCredentialResponse {
+    pub success: bool,
+    /// 响应时间（毫秒）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u64>,
+    /// 错误信息（仅失败时有值）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// 模型返回的文本片段（截取前 100 字符）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_preview: Option<String>,
+}

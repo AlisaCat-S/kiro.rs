@@ -8,13 +8,18 @@ use chrono::Utc;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
+use crate::http_client::build_client;
+use crate::kiro::endpoint::{KiroEndpoint, RequestContext};
+use crate::kiro::machine_id;
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::token_manager::MultiTokenManager;
 
 use super::error::AdminServiceError;
 use super::types::{
     AddCredentialRequest, AddCredentialResponse, BalanceResponse, CredentialStatusItem,
-    CredentialsStatusResponse, LoadBalancingModeResponse, SetLoadBalancingModeRequest,
+    CredentialsStatusResponse, ImportCredentialsRequest, ImportCredentialsResponse,
+    ImportItemResult, LoadBalancingModeResponse, SetLoadBalancingModeRequest,
+    TestCredentialResponse,
 };
 
 /// 余额缓存过期时间（秒），5 分钟
@@ -38,12 +43,18 @@ pub struct AdminService {
     cache_path: Option<PathBuf>,
     /// 已注册的端点名称集合（用于 add_credential 校验）
     known_endpoints: HashSet<String>,
+    /// 端点实现注册表（用于凭证测试）
+    endpoints: HashMap<String, Arc<dyn KiroEndpoint>>,
+    /// 默认端点名称
+    default_endpoint: String,
 }
 
 impl AdminService {
     pub fn new(
         token_manager: Arc<MultiTokenManager>,
         known_endpoints: impl IntoIterator<Item = String>,
+        endpoints: HashMap<String, Arc<dyn KiroEndpoint>>,
+        default_endpoint: String,
     ) -> Self {
         let cache_path = token_manager
             .cache_dir()
@@ -56,6 +67,8 @@ impl AdminService {
             balance_cache: Mutex::new(balance_cache),
             cache_path,
             known_endpoints: known_endpoints.into_iter().collect(),
+            endpoints,
+            default_endpoint,
         }
     }
 
@@ -311,6 +324,161 @@ impl AdminService {
             .force_refresh_token_for(id)
             .await
             .map_err(|e| self.classify_balance_error(e, id))
+    }
+
+    /// 导出所有凭据（含明文 token）
+    pub fn export_credentials(&self) -> Vec<KiroCredentials> {
+        self.token_manager.export_credentials()
+    }
+
+    /// 批量导入凭据
+    pub async fn import_credentials(
+        &self,
+        req: ImportCredentialsRequest,
+    ) -> ImportCredentialsResponse {
+        let mut imported = 0u32;
+        let mut skipped = 0u32;
+        let mut failed = 0u32;
+        let mut details = Vec::new();
+
+        for (index, cred_req) in req.credentials.into_iter().enumerate() {
+            let result = self.add_credential(cred_req).await;
+            match result {
+                Ok(resp) => {
+                    imported += 1;
+                    details.push(ImportItemResult {
+                        index: index as u32,
+                        status: "imported".to_string(),
+                        credential_id: Some(resp.credential_id),
+                        error: None,
+                    });
+                }
+                Err(e) => {
+                    let msg = match &e {
+                        AdminServiceError::InvalidCredential(m) => m.clone(),
+                        AdminServiceError::UpstreamError(m) => m.clone(),
+                        AdminServiceError::InternalError(m) => m.clone(),
+                        AdminServiceError::NotFound { id } => format!("凭据不存在: {}", id),
+                    };
+                    if msg.contains("重复") {
+                        skipped += 1;
+                        details.push(ImportItemResult {
+                            index: index as u32,
+                            status: "skipped".to_string(),
+                            credential_id: None,
+                            error: Some(msg),
+                        });
+                    } else {
+                        failed += 1;
+                        details.push(ImportItemResult {
+                            index: index as u32,
+                            status: "failed".to_string(),
+                            credential_id: None,
+                            error: Some(msg),
+                        });
+                    }
+                }
+            }
+        }
+
+        ImportCredentialsResponse {
+            success: failed == 0,
+            imported,
+            skipped,
+            failed,
+            details,
+        }
+    }
+
+    /// 测试指定凭据（发送一个简短的 Claude 请求）
+    pub async fn test_credential(&self, id: u64) -> Result<TestCredentialResponse, AdminServiceError> {
+        let ctx = self
+            .token_manager
+            .acquire_context_for(id)
+            .await
+            .map_err(|e| self.classify_balance_error(e, id))?;
+
+        let config = self.token_manager.config();
+        let machine_id_str = machine_id::generate_from_credentials(&ctx.credentials, config);
+
+        let endpoint_name = ctx
+            .credentials
+            .endpoint
+            .as_deref()
+            .unwrap_or(&self.default_endpoint);
+        let endpoint = self
+            .endpoints
+            .get(endpoint_name)
+            .ok_or_else(|| AdminServiceError::InternalError(format!("未知端点: {}", endpoint_name)))?;
+
+        let rctx = RequestContext {
+            credentials: &ctx.credentials,
+            token: &ctx.token,
+            machine_id: &machine_id_str,
+            config,
+        };
+
+        let test_body = serde_json::json!({
+            "conversationState": {
+                "conversationId": format!("test-{}", uuid::Uuid::new_v4()),
+                "currentMessage": {
+                    "userInputMessage": {
+                        "content": "Hi",
+                        "modelId": "claude-opus-4-6",
+                        "userInputMessageContext": {},
+                        "origin": "AI_EDITOR"
+                    }
+                },
+                "chatTriggerType": "MANUAL",
+                "agentTaskType": "vibe"
+            }
+        });
+
+        let body_str = test_body.to_string();
+        let transformed_body = endpoint.transform_api_body(&body_str, &rctx);
+        let url = endpoint.api_url(&rctx);
+
+        let effective_proxy = ctx.credentials.effective_proxy(None);
+        let client = build_client(effective_proxy.as_ref(), 30, config.tls_backend)
+            .map_err(|e| AdminServiceError::InternalError(format!("创建 HTTP 客户端失败: {}", e)))?;
+
+        let req = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("Connection", "keep-alive")
+            .body(transformed_body.clone());
+
+        let req = endpoint.decorate_api(req, &rctx);
+
+        let start = std::time::Instant::now();
+        let response = req.send().await.map_err(|e| {
+            AdminServiceError::UpstreamError(format!("请求发送失败: {}", e))
+        })?;
+
+        let latency_ms = start.elapsed().as_millis() as u64;
+        let status = response.status();
+
+        if status.is_success() {
+            Ok(TestCredentialResponse {
+                success: true,
+                latency_ms: Some(latency_ms),
+                error: None,
+                response_preview: Some(format!("HTTP {} - 连接成功", status.as_u16())),
+            })
+        } else {
+            let body = response.text().await.unwrap_or_default();
+            let preview = if body.len() > 200 {
+                format!("{}...", &body[..200])
+            } else {
+                body
+            };
+            Ok(TestCredentialResponse {
+                success: false,
+                latency_ms: Some(latency_ms),
+                error: Some(format!("HTTP {}", status.as_u16())),
+                response_preview: Some(preview),
+            })
+        }
     }
 
     // ============ 余额缓存持久化 ============

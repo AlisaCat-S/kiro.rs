@@ -9,9 +9,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version tag for Docker images (e.g., 2025.12.1)'
-        required: true
-        default: '2026.1.1'
+        description: 'Version tag (leave empty to use current date, e.g., 2026.5.18)'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -71,7 +71,11 @@ jobs:
         id: version
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+            INPUT_VERSION="${{ github.event.inputs.version }}"
+            if [ -z "${INPUT_VERSION}" ]; then
+              INPUT_VERSION="$(date +%Y.%-m.%-d)"
+            fi
+            echo "version=${INPUT_VERSION}" >> $GITHUB_OUTPUT
             echo "is_beta=false" >> $GITHUB_OUTPUT
           elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
             echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
