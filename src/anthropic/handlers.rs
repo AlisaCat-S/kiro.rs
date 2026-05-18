@@ -11,7 +11,7 @@ use axum::{
     Json as JsonExtractor,
     body::Body,
     extract::State,
-    http::{StatusCode, header},
+    http::{StatusCode, header, HeaderValue},
     response::{IntoResponse, Json, Response},
 };
 use bytes::Bytes;
@@ -26,6 +26,26 @@ use super::middleware::AppState;
 use super::stream::{BufferedStreamContext, SseEvent, StreamContext};
 use super::types::{CountTokensRequest, CountTokensResponse, ErrorResponse, MessagesRequest, Model, ModelsResponse, OutputConfig, Thinking};
 use super::websearch;
+
+/// 为响应注入 Anthropic 风格的 HTTP 头（Request-Id, Ratelimit 等）
+pub fn build_anthropic_response(_status: StatusCode, request_id: &str, mut response: Response) -> Response {
+    let headers = response.headers_mut();
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    headers.insert("request-id", HeaderValue::from_str(request_id).unwrap_or_else(|_| HeaderValue::from_static("req_unknown")));
+    headers.insert("anthropic-ratelimit-requests-limit", HeaderValue::from_static("1000"));
+    headers.insert("anthropic-ratelimit-requests-remaining", HeaderValue::from_static("999"));
+    headers.insert("anthropic-ratelimit-requests-reset", HeaderValue::from_str(&now).unwrap_or_else(|_| HeaderValue::from_static("2026-01-01T00:00:00Z")));
+    headers.insert("anthropic-ratelimit-input-tokens-limit", HeaderValue::from_static("80000"));
+    headers.insert("anthropic-ratelimit-input-tokens-remaining", HeaderValue::from_static("80000"));
+    headers.insert("anthropic-ratelimit-input-tokens-reset", HeaderValue::from_str(&now).unwrap_or_else(|_| HeaderValue::from_static("2026-01-01T00:00:00Z")));
+    headers.insert("anthropic-ratelimit-output-tokens-limit", HeaderValue::from_static("16000"));
+    headers.insert("anthropic-ratelimit-output-tokens-remaining", HeaderValue::from_static("16000"));
+    headers.insert("anthropic-ratelimit-output-tokens-reset", HeaderValue::from_str(&now).unwrap_or_else(|_| HeaderValue::from_static("2026-01-01T00:00:00Z")));
+    headers.insert("anthropic-ratelimit-tokens-limit", HeaderValue::from_static("96000"));
+    headers.insert("anthropic-ratelimit-tokens-remaining", HeaderValue::from_static("96000"));
+    headers.insert("anthropic-ratelimit-tokens-reset", HeaderValue::from_str(&now).unwrap_or_else(|_| HeaderValue::from_static("2026-01-01T00:00:00Z")));
+    response
+}
 
 /// 将 KiroProvider 错误映射为 HTTP 响应
 fn map_provider_error(err: Error) -> Response {
@@ -184,9 +204,15 @@ pub async fn get_models() -> impl IntoResponse {
         },
     ];
 
+    let first_id = models.first().map(|m| m.id.clone());
+    let last_id = models.last().map(|m| m.id.clone());
+
     Json(ModelsResponse {
         object: "list".to_string(),
         data: models,
+        first_id,
+        last_id,
+        has_more: false,
     })
 }
 
@@ -342,13 +368,15 @@ async fn handle_stream_request(
     let stream = create_sse_stream(response, ctx, initial_events);
 
     // 返回 SSE 响应
-    Response::builder()
+    let request_id = format!("req_{}", Uuid::new_v4().simple());
+    let sse_response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/event-stream")
         .header(header::CACHE_CONTROL, "no-cache")
         .header(header::CONNECTION, "keep-alive")
         .body(Body::from_stream(stream))
-        .unwrap()
+        .unwrap();
+    build_anthropic_response(StatusCode::OK, &request_id, sse_response)
 }
 
 /// Ping 事件间隔（25秒）
@@ -621,21 +649,31 @@ async fn handle_non_stream_request(
     let final_input_tokens = context_input_tokens.unwrap_or(input_tokens);
 
     // 构建 Anthropic 响应
+    let msg_id = format!("msg_{}", Uuid::new_v4().simple());
     let response_body = json!({
-        "id": format!("msg_{}", Uuid::new_v4().to_string().replace('-', "")),
+        "id": &msg_id,
         "type": "message",
         "role": "assistant",
         "content": content,
         "model": model,
         "stop_reason": stop_reason,
         "stop_sequence": null,
+        "stop_details": null,
         "usage": {
             "input_tokens": final_input_tokens,
-            "output_tokens": output_tokens
+            "output_tokens": output_tokens,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation": {
+                "ephemeral_1h_input_tokens": 0,
+                "ephemeral_5m_input_tokens": 0
+            },
+            "service_tier": "standard",
+            "inference_geo": "global"
         }
     });
 
-    (StatusCode::OK, Json(response_body)).into_response()
+    build_anthropic_response(StatusCode::OK, &msg_id, Json(response_body).into_response())
 }
 
 /// 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
@@ -855,13 +893,15 @@ async fn handle_stream_request_buffered(
     let stream = create_buffered_sse_stream(response, ctx);
 
     // 返回 SSE 响应
-    Response::builder()
+    let request_id = format!("req_{}", Uuid::new_v4().simple());
+    let sse_response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/event-stream")
         .header(header::CACHE_CONTROL, "no-cache")
         .header(header::CONNECTION, "keep-alive")
         .body(Body::from_stream(stream))
-        .unwrap()
+        .unwrap();
+    build_anthropic_response(StatusCode::OK, &request_id, sse_response)
 }
 
 /// 创建缓冲 SSE 事件流

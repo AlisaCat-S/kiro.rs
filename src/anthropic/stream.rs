@@ -484,11 +484,14 @@ impl SseStateManager {
                     "type": "message_delta",
                     "delta": {
                         "stop_reason": self.get_stop_reason(),
-                        "stop_sequence": null
+                        "stop_sequence": null,
+                        "stop_details": null
                     },
                     "usage": {
                         "input_tokens": input_tokens,
-                        "output_tokens": output_tokens
+                        "output_tokens": output_tokens,
+                        "cache_creation_input_tokens": 0,
+                        "cache_read_input_tokens": 0
                     }
                 }),
             ));
@@ -583,9 +586,18 @@ impl StreamContext {
                 "model": self.model,
                 "stop_reason": null,
                 "stop_sequence": null,
+                "stop_details": null,
                 "usage": {
                     "input_tokens": self.input_tokens,
-                    "output_tokens": 1
+                    "output_tokens": 1,
+                    "cache_creation_input_tokens": 0,
+                    "cache_read_input_tokens": 0,
+                    "cache_creation": {
+                        "ephemeral_1h_input_tokens": 0,
+                        "ephemeral_5m_input_tokens": 0
+                    },
+                    "service_tier": "standard",
+                    "inference_geo": "global"
                 }
             }
         })

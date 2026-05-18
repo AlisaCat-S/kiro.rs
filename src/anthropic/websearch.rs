@@ -257,11 +257,19 @@ fn generate_websearch_events(
                 "model": model,
                 "content": [],
                 "stop_reason": null,
+                "stop_sequence": null,
+                "stop_details": null,
                 "usage": {
                     "input_tokens": input_tokens,
                     "output_tokens": 0,
                     "cache_creation_input_tokens": 0,
-                    "cache_read_input_tokens": 0
+                    "cache_read_input_tokens": 0,
+                    "cache_creation": {
+                        "ephemeral_1h_input_tokens": 0,
+                        "ephemeral_5m_input_tokens": 0
+                    },
+                    "service_tier": "standard",
+                    "inference_geo": "global"
                 }
             }
         }),
@@ -415,17 +423,20 @@ fn generate_websearch_events(
     ));
 
     // 10. message_delta
-    // 官方 API 的 message_delta.delta 中没有 stop_sequence 字段
     let output_tokens = (summary.len() as i32 + 3) / 4; // 简单估算
     events.push(SseEvent::new(
         "message_delta",
         json!({
             "type": "message_delta",
             "delta": {
-                "stop_reason": "end_turn"
+                "stop_reason": "end_turn",
+                "stop_sequence": null,
+                "stop_details": null
             },
             "usage": {
                 "output_tokens": output_tokens,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
                 "server_tool_use": {
                     "web_search_requests": 1
                 }
@@ -510,13 +521,15 @@ pub async fn handle_websearch_request(
     let stream =
         create_websearch_sse_stream(model, query, tool_use_id, search_results, input_tokens);
 
-    Response::builder()
+    let request_id = format!("req_{}", uuid::Uuid::new_v4().simple());
+    let sse_response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/event-stream")
         .header(header::CACHE_CONTROL, "no-cache")
         .header(header::CONNECTION, "keep-alive")
         .body(Body::from_stream(stream))
-        .unwrap()
+        .unwrap();
+    super::handlers::build_anthropic_response(StatusCode::OK, &request_id, sse_response)
 }
 
 /// 调用 Kiro MCP API
