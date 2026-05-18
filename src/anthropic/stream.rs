@@ -1014,9 +1014,10 @@ impl StreamContext {
                 "index": block_index,
                 "content_block": {
                     "type": "tool_use",
-                    "id": tool_use.tool_use_id,
+                    "id": super::handlers::normalize_tool_use_id(&tool_use.tool_use_id),
                     "name": original_name,
-                    "input": {}
+                    "input": {},
+                    "caller": {"type": "direct"}
                 }
             }),
         );

@@ -53,6 +53,17 @@ pub fn generate_req_id() -> String {
     id
 }
 
+/// 将 Kiro 上游的 tooluse_xxx 格式转换为官方 toolu_01xxx 格式
+pub fn normalize_tool_use_id(id: &str) -> String {
+    if id.starts_with("tooluse_") {
+        format!("toolu_01{}", &id[8..])
+    } else if id.starts_with("toolu_") {
+        id.to_string()
+    } else {
+        format!("toolu_01{}", id)
+    }
+}
+
 /// 为响应注入 Anthropic 风格的 HTTP 头（Request-Id, Ratelimit 等）
 pub fn build_anthropic_response(_status: StatusCode, request_id: &str, mut response: Response) -> Response {
     let headers = response.headers_mut();
@@ -594,9 +605,10 @@ async fn handle_non_stream_request(
 
                                 tool_uses.push(json!({
                                     "type": "tool_use",
-                                    "id": tool_use.tool_use_id,
+                                    "id": normalize_tool_use_id(&tool_use.tool_use_id),
                                     "name": original_name,
-                                    "input": input
+                                    "input": input,
+                                    "caller": {"type": "direct"}
                                 }));
                             }
                         }
