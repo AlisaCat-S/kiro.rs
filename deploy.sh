@@ -1,6 +1,19 @@
 #!/bin/bash
 set -e
 
+# ============================================================
+# kiro-rs 一键部署脚本
+#
+# 关键约束（AI 部署时务必遵守）：
+#   1. credentials.json 必须是 JSON 数组格式 []，不能是单对象 {}
+#      - 只有数组格式程序才会回写持久化，单对象格式导入的凭据重启后丢失
+#      - 初始部署时使用空数组 [] 即可，之后通过 Admin API 导入凭据
+#   2. config.json 中 default_endpoint 必须是 "ide"（唯一已注册的端点名）
+#   3. 端口固定 8990，容器内监听 0.0.0.0:8990
+#   4. 凭据通过 Admin API 管理（/api/admin/credentials），不要手动编辑文件
+#   5. admin_api_key 是管理接口的认证密钥，必须修改默认值
+# ============================================================
+
 INSTALL_DIR="/opt/kirors"
 IMAGE="ghcr.io/eyre921/kiro-rs:latest"
 COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
@@ -59,13 +72,9 @@ EOF
     if [ ! -f "$INSTALL_DIR/config/credentials.json" ]; then
         info "生成凭证模板: config/credentials.json"
         cat > "$INSTALL_DIR/config/credentials.json" << 'EOF'
-[
-  {
-    "cookie": "YOUR_COOKIE_HERE",
-    "csrf_token": "YOUR_CSRF_TOKEN_HERE"
-  }
-]
+[]
 EOF
+        info "凭证文件已初始化为空数组，请通过 Admin API 导入凭据"
     else
         warn "credentials.json 已存在，跳过"
     fi
