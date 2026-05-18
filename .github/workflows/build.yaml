@@ -95,7 +95,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 11
+          version: 10
 
       - name: Install admin-ui dependencies
         working-directory: admin-ui
