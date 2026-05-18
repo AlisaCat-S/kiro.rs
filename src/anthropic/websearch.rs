@@ -240,10 +240,7 @@ fn generate_websearch_events(
     input_tokens: i32,
 ) -> Vec<SseEvent> {
     let mut events = Vec::new();
-    let message_id = format!(
-        "msg_{}",
-        Uuid::new_v4().to_string().replace('-', "")[..24].to_string()
-    );
+    let message_id = super::handlers::generate_msg_id();
 
     // 1. message_start
     events.push(SseEvent::new(
@@ -521,7 +518,7 @@ pub async fn handle_websearch_request(
     let stream =
         create_websearch_sse_stream(model, query, tool_use_id, search_results, input_tokens);
 
-    let request_id = format!("req_{}", uuid::Uuid::new_v4().simple());
+    let request_id = super::handlers::generate_req_id();
     let sse_response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/event-stream")

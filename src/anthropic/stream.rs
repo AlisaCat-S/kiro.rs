@@ -5,7 +5,6 @@
 use std::collections::HashMap;
 
 use serde_json::json;
-use uuid::Uuid;
 
 use crate::kiro::model::events::Event;
 
@@ -558,7 +557,7 @@ impl StreamContext {
         Self {
             state_manager: SseStateManager::new(),
             model: model.into(),
-            message_id: format!("msg_{}", Uuid::new_v4().to_string().replace('-', "")),
+            message_id: super::handlers::generate_msg_id(),
             input_tokens,
             context_input_tokens: None,
             output_tokens: 0,

@@ -27,6 +27,32 @@ use super::stream::{BufferedStreamContext, SseEvent, StreamContext};
 use super::types::{CountTokensRequest, CountTokensResponse, ErrorResponse, MessagesRequest, Model, ModelsResponse, OutputConfig, Thinking};
 use super::websearch;
 
+const BASE62_CHARS: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
+/// 生成官方风格的消息 ID: msg_01 + 22 字符 base62
+pub fn generate_msg_id() -> String {
+    let uuid_bytes = Uuid::new_v4().into_bytes();
+    let mut id = String::with_capacity(28);
+    id.push_str("msg_01");
+    for &b in &uuid_bytes[..11] {
+        id.push(BASE62_CHARS[(b as usize) % 62] as char);
+        id.push(BASE62_CHARS[((b as usize) * 7 + 13) % 62] as char);
+    }
+    id
+}
+
+/// 生成官方风格的请求 ID: req_01 + 22 字符 base62
+pub fn generate_req_id() -> String {
+    let uuid_bytes = Uuid::new_v4().into_bytes();
+    let mut id = String::with_capacity(28);
+    id.push_str("req_01");
+    for &b in &uuid_bytes[..11] {
+        id.push(BASE62_CHARS[(b as usize) % 62] as char);
+        id.push(BASE62_CHARS[((b as usize) * 7 + 13) % 62] as char);
+    }
+    id
+}
+
 /// 为响应注入 Anthropic 风格的 HTTP 头（Request-Id, Ratelimit 等）
 pub fn build_anthropic_response(_status: StatusCode, request_id: &str, mut response: Response) -> Response {
     let headers = response.headers_mut();
@@ -368,7 +394,7 @@ async fn handle_stream_request(
     let stream = create_sse_stream(response, ctx, initial_events);
 
     // 返回 SSE 响应
-    let request_id = format!("req_{}", Uuid::new_v4().simple());
+    let request_id = generate_req_id();
     let sse_response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/event-stream")
@@ -649,7 +675,7 @@ async fn handle_non_stream_request(
     let final_input_tokens = context_input_tokens.unwrap_or(input_tokens);
 
     // 构建 Anthropic 响应
-    let msg_id = format!("msg_{}", Uuid::new_v4().simple());
+    let msg_id = generate_msg_id();
     let response_body = json!({
         "id": &msg_id,
         "type": "message",
@@ -893,7 +919,7 @@ async fn handle_stream_request_buffered(
     let stream = create_buffered_sse_stream(response, ctx);
 
     // 返回 SSE 响应
-    let request_id = format!("req_{}", Uuid::new_v4().simple());
+    let request_id = generate_req_id();
     let sse_response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/event-stream")
