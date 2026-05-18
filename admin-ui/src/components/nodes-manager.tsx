@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { toast } from 'sonner'
-import { Plus, Trash2, RefreshCw, Download, Upload, FlaskConical, Globe, Server, ArrowUpDown, Wallet, Power } from 'lucide-react'
+import { Plus, Trash2, RefreshCw, Download, Upload, FlaskConical, Globe, Server, ArrowUpDown, Wallet, Power, Send, Activity } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { Progress } from '@/components/ui/progress'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { storage } from '@/lib/storage'
 import {
@@ -48,6 +49,12 @@ export function NodesManager() {
   const [togglingId, setTogglingId] = useState<string | null>(null)
   const [sortField, setSortField] = useState<SortField>('id')
   const [sortDir, setSortDir] = useState<SortDir>('asc')
+  const [autoRefresh, setAutoRefresh] = useState(true)
+  const [batchTesting, setBatchTesting] = useState<string | null>(null)
+  const [batchTestProgress, setBatchTestProgress] = useState({ current: 0, total: 0, passed: 0, failed: 0 })
+  const [migrateDialog, setMigrateDialog] = useState<{ from: NodeWithStatus; credIds: number[] } | null>(null)
+  const [migrateTarget, setMigrateTarget] = useState('')
+  const refreshTimer = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const loadLocalNode = useCallback(async () => {
     try {
@@ -90,6 +97,19 @@ export function NodesManager() {
     loadLocalNode()
     loadRemoteNodes()
   }, [loadLocalNode, loadRemoteNodes])
+
+  // 自动刷新（30 秒）
+  useEffect(() => {
+    if (autoRefresh) {
+      refreshTimer.current = setInterval(() => {
+        loadLocalNode()
+        loadRemoteNodes()
+      }, 30000)
+    }
+    return () => {
+      if (refreshTimer.current) clearInterval(refreshTimer.current)
+    }
+  }, [autoRefresh, loadLocalNode, loadRemoteNodes])
 
   const handleAddNode = async () => {
     if (!newNodeName || !newNodeUrl || !newNodeKey) {
@@ -237,6 +257,77 @@ export function NodesManager() {
     }
   }
 
+  // 批量测试某节点所有凭证
+  const handleBatchTest = async (node: NodeWithStatus) => {
+    if (!node.credentials) return
+    const creds = node.credentials.credentials.filter(c => !c.disabled)
+    if (creds.length === 0) {
+      toast.error('没有可用凭证')
+      return
+    }
+    setBatchTesting(node.id)
+    setBatchTestProgress({ current: 0, total: creds.length, passed: 0, failed: 0 })
+    let passed = 0
+    let failed = 0
+    for (let i = 0; i < creds.length; i++) {
+      try {
+        let result: TestCredentialResponse
+        if (node.id === 'local') {
+          result = await testCredential(creds[i].id)
+        } else {
+          result = await testRemoteCredential(node.baseUrl, node.adminKey, creds[i].id)
+        }
+        if (result.success) passed++
+        else failed++
+      } catch {
+        failed++
+      }
+      setBatchTestProgress({ current: i + 1, total: creds.length, passed, failed })
+    }
+    setBatchTesting(null)
+    toast.success(`批量测试完成: ${passed} 通过, ${failed} 失败 (共 ${creds.length})`)
+  }
+
+  // 跨节点迁移
+  const handleMigrate = async () => {
+    if (!migrateDialog || !migrateTarget) return
+    const targetNode = allNodes.find(n => n.id === migrateTarget)
+    if (!targetNode) {
+      toast.error('目标节点不存在')
+      return
+    }
+    try {
+      // 从源节点导出选中的凭证
+      let allCreds: unknown[]
+      if (migrateDialog.from.id === 'local') {
+        allCreds = await exportCredentials()
+      } else {
+        allCreds = await exportRemoteCredentials(migrateDialog.from.baseUrl, migrateDialog.from.adminKey)
+      }
+      const selected = (allCreds as Array<{ id?: number }>).filter(
+        c => c.id !== undefined && migrateDialog.credIds.includes(c.id)
+      )
+      if (selected.length === 0) {
+        toast.error('未找到选中的凭证')
+        return
+      }
+      // 导入到目标节点
+      let result
+      if (targetNode.id === 'local') {
+        result = await importCredentials({ credentials: selected as never[] })
+      } else {
+        result = await importRemoteCredentials(targetNode.baseUrl, targetNode.adminKey, { credentials: selected as never[] })
+      }
+      toast.success(`迁移完成: ${result.imported} 成功, ${result.skipped} 跳过, ${result.failed} 失败`)
+      setMigrateDialog(null)
+      setMigrateTarget('')
+      loadLocalNode()
+      loadRemoteNodes()
+    } catch (e: unknown) {
+      toast.error(`迁移失败: ${e instanceof Error ? e.message : '未知错误'}`)
+    }
+  }
+
   const toggleSort = (field: SortField) => {
     if (sortField === field) {
       setSortDir(prev => prev === 'asc' ? 'desc' : 'asc')
@@ -276,14 +367,71 @@ export function NodesManager() {
     </th>
   )
 
+  // 健康看板数据
+  const healthStats = useMemo(() => {
+    let totalCreds = 0
+    let availableCreds = 0
+    let onlineNodes = 0
+    let offlineNodes = 0
+    for (const node of allNodes) {
+      if (node.status === 'online') onlineNodes++
+      else offlineNodes++
+      if (node.credentials) {
+        totalCreds += node.credentials.total
+        availableCreds += node.credentials.available
+      }
+    }
+    return { totalCreds, availableCreds, onlineNodes, offlineNodes, totalNodes: allNodes.length }
+  }, [allNodes])
+
   return (
     <div className="space-y-6">
+      {/* 健康看板 */}
+      <div className="grid gap-4 md:grid-cols-4">
+        <Card>
+          <CardContent className="pt-4 pb-3">
+            <div className="text-2xl font-bold">{healthStats.totalNodes}</div>
+            <p className="text-xs text-muted-foreground">节点总数 ({healthStats.onlineNodes} 在线)</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-4 pb-3">
+            <div className="text-2xl font-bold">{healthStats.totalCreds}</div>
+            <p className="text-xs text-muted-foreground">凭证总数</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-4 pb-3">
+            <div className="text-2xl font-bold text-green-600">{healthStats.availableCreds}</div>
+            <p className="text-xs text-muted-foreground">可用凭证</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-4 pb-3">
+            <div className={`text-2xl font-bold ${healthStats.totalCreds - healthStats.availableCreds > 0 ? 'text-destructive' : 'text-muted-foreground'}`}>
+              {healthStats.totalCreds - healthStats.availableCreds}
+            </div>
+            <p className="text-xs text-muted-foreground">不可用凭证</p>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* 标题栏 */}
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-bold flex items-center gap-2">
           <Globe className="h-6 w-6" />
           多节点管理
         </h2>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
+          <Button
+            variant={autoRefresh ? 'default' : 'outline'}
+            size="sm"
+            onClick={() => setAutoRefresh(!autoRefresh)}
+            title={autoRefresh ? '关闭自动刷新' : '开启自动刷新 (30s)'}
+          >
+            <Activity className="h-4 w-4 mr-1" />
+            {autoRefresh ? '自动' : '手动'}
+          </Button>
           <Button variant="outline" size="sm" onClick={() => { loadLocalNode(); loadRemoteNodes() }}>
             <RefreshCw className="h-4 w-4 mr-1" /> 刷新
           </Button>
@@ -306,6 +454,35 @@ export function NodesManager() {
         </div>
       </div>
 
+      {/* 跨节点迁移对话框 */}
+      {migrateDialog && (
+        <Dialog open={!!migrateDialog} onOpenChange={() => setMigrateDialog(null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>迁移凭证到其他节点</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 pt-4">
+              <p className="text-sm text-muted-foreground">
+                从 <strong>{migrateDialog.from.name}</strong> 迁移 {migrateDialog.credIds.length} 个凭证
+              </p>
+              <select
+                className="w-full border rounded-md px-3 py-2 text-sm bg-background"
+                value={migrateTarget}
+                onChange={e => setMigrateTarget(e.target.value)}
+              >
+                <option value="">选择目标节点...</option>
+                {allNodes.filter(n => n.id !== migrateDialog.from.id && n.status === 'online').map(n => (
+                  <option key={n.id} value={n.id}>{n.name}</option>
+                ))}
+              </select>
+              <Button className="w-full" onClick={handleMigrate} disabled={!migrateTarget}>
+                <Send className="h-4 w-4 mr-1" /> 开始迁移
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+
       {allNodes.map(node => (
         <NodeCard
           key={node.id}
@@ -323,6 +500,10 @@ export function NodesManager() {
           onGetBalance={handleGetBalance}
           onToggleDisabled={handleToggleDisabled}
           onResetFailure={handleResetFailure}
+          onBatchTest={handleBatchTest}
+          onMigrate={(node, credIds) => setMigrateDialog({ from: node, credIds })}
+          batchTesting={batchTesting}
+          batchTestProgress={batchTestProgress}
         />
       ))}
     </div>
@@ -346,12 +527,18 @@ interface NodeCardProps {
   onGetBalance: (node: NodeWithStatus, credId: number) => void
   onToggleDisabled: (node: NodeWithStatus, credId: number, currentDisabled: boolean) => void
   onResetFailure: (node: NodeWithStatus, credId: number) => void
+  onBatchTest: (node: NodeWithStatus) => void
+  onMigrate: (node: NodeWithStatus, credIds: number[]) => void
+  batchTesting: string | null
+  batchTestProgress: { current: number; total: number; passed: number; failed: number }
 }
 
 function NodeCard({
   node, sortCredentials, SortHeader, testingId, loadingBalance, togglingId, balanceMap,
   onExport, onImport, onRemove, onTest, onGetBalance, onToggleDisabled, onResetFailure,
+  onBatchTest, onMigrate, batchTesting, batchTestProgress,
 }: NodeCardProps) {
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const sorted = useMemo(
     () => node.credentials ? sortCredentials(node.credentials.credentials) : [],
     [node.credentials, sortCredentials]
@@ -374,27 +561,66 @@ function NodeCard({
             )}
           </CardTitle>
           <div className="flex gap-1">
-            <Button variant="ghost" size="sm" onClick={() => onExport(node)} title="导出凭证">
-              <Download className="h-4 w-4" />
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => onImport(node)} title="导入凭证">
-              <Upload className="h-4 w-4" />
-            </Button>
-            {node.id !== 'local' && (
-              <Button variant="ghost" size="sm" onClick={() => onRemove(node.id)} title="移除节点">
-                <Trash2 className="h-4 w-4 text-destructive" />
-              </Button>
-            )}
-          </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onBatchTest(node)}
+                  disabled={batchTesting === node.id}
+                  title="批量测试所有凭证"
+                >
+                  <FlaskConical className="h-4 w-4" />
+                </Button>
+                {selectedIds.size > 0 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => onMigrate(node, Array.from(selectedIds))}
+                    title={`迁移 ${selectedIds.size} 个凭证到其他节点`}
+                  >
+                    <Send className="h-4 w-4" />
+                  </Button>
+                )}
+                <Button variant="ghost" size="sm" onClick={() => onExport(node)} title="导出凭证">
+                  <Download className="h-4 w-4" />
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => onImport(node)} title="导入凭证">
+                  <Upload className="h-4 w-4" />
+                </Button>
+                {node.id !== 'local' && (
+                  <Button variant="ghost" size="sm" onClick={() => onRemove(node.id)} title="移除节点">
+                    <Trash2 className="h-4 w-4 text-destructive" />
+                  </Button>
+                )}
+              </div>
         </div>
         <p className="text-xs text-muted-foreground">{node.baseUrl}</p>
       </CardHeader>
       {sorted.length > 0 && (
         <CardContent className="pt-0">
+          {batchTesting === node.id && (
+            <div className="mb-3 space-y-1">
+              <div className="flex justify-between text-xs text-muted-foreground">
+                <span>批量测试中... {batchTestProgress.current}/{batchTestProgress.total}</span>
+                <span className="text-green-600">{batchTestProgress.passed} 通过</span>
+              </div>
+              <Progress value={(batchTestProgress.current / batchTestProgress.total) * 100} />
+            </div>
+          )}
           <div className="border rounded-md overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-muted/50">
                 <tr>
+                  <th className="px-2 py-2 w-8">
+                    <input
+                      type="checkbox"
+                      className="rounded"
+                      checked={selectedIds.size === sorted.length && sorted.length > 0}
+                      onChange={(e) => {
+                        if (e.target.checked) setSelectedIds(new Set(sorted.map(c => c.id)))
+                        else setSelectedIds(new Set())
+                      }}
+                    />
+                  </th>
                   <SortHeader field="id" label="ID" />
                   <th className="px-3 py-2 text-left font-medium">类型</th>
                   <SortHeader field="email" label="邮箱" />
@@ -411,6 +637,19 @@ function NodeCard({
                   const balance = balanceMap.get(key)
                   return (
                     <tr key={cred.id} className="border-t hover:bg-muted/30">
+                      <td className="px-2 py-2">
+                        <input
+                          type="checkbox"
+                          className="rounded"
+                          checked={selectedIds.has(cred.id)}
+                          onChange={(e) => {
+                            const next = new Set(selectedIds)
+                            if (e.target.checked) next.add(cred.id)
+                            else next.delete(cred.id)
+                            setSelectedIds(next)
+                          }}
+                        />
+                      </td>
                       <td className="px-3 py-2 font-mono">#{cred.id}</td>
                       <td className="px-3 py-2">
                         <Badge variant="outline">{cred.authMethod || '?'}</Badge>
