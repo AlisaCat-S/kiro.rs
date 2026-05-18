@@ -122,6 +122,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y musl-tools
 
+      - name: Set version in Cargo.toml
+        shell: bash
+        run: sed -i "s/^version = .*/version = \"${{ steps.version.outputs.version }}\"/" Cargo.toml
+
       - name: Build app
         run: cargo build --release --target ${{ matrix.target }} ${{ contains(matrix.target, 'musl') && '--no-default-features' || '' }}
 
