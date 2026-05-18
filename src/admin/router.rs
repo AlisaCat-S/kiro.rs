@@ -4,6 +4,7 @@ use axum::{
     Router, middleware,
     routing::{delete, get, post},
 };
+use tower_http::cors::{Any, CorsLayer};
 
 use super::{
     handlers::{
@@ -42,5 +43,11 @@ pub fn create_admin_router(state: AdminState) -> Router {
             state.clone(),
             admin_auth_middleware,
         ))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        )
         .with_state(state)
 }
