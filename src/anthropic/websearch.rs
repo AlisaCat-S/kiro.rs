@@ -437,6 +437,9 @@ fn generate_websearch_events(
                 "server_tool_use": {
                     "web_search_requests": 1
                 }
+            },
+            "context_management": {
+                "applied_edits": []
             }
         }),
     ));

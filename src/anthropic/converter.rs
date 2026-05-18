@@ -691,10 +691,32 @@ fn has_thinking_tags(content: &str) -> bool {
 fn build_history(req: &MessagesRequest, messages: &[super::types::Message], model_id: &str, tool_name_map: &mut HashMap<String, String>) -> Result<Vec<Message>, ConversionError> {
     let mut history = Vec::new();
 
+    // 生成 structured output 的 system prompt 注入
+    let json_schema_instruction = if let Some(ref oc) = req.output_config {
+        if let Some(ref format) = oc.format {
+            match format {
+                super::types::OutputFormat::JsonSchema { schema } => {
+                    Some(format!(
+                        "\n\nIMPORTANT: You MUST respond with ONLY valid JSON that conforms to the following JSON schema. \
+                        Do NOT include any other text, markdown formatting, or code blocks. Output raw JSON only.\n\
+                        JSON Schema: {}",
+                        serde_json::to_string(schema).unwrap_or_default()
+                    ))
+                }
+                _ => None,
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     // 生成thinking前缀（如果需要）
     let thinking_prefix = generate_thinking_prefix(req);
 
     // 1. 处理系统消息
+    let schema_suffix = json_schema_instruction.as_deref().unwrap_or("");
     if let Some(ref system) = req.system {
         let system_content: String = system
             .iter()
@@ -703,8 +725,8 @@ fn build_history(req: &MessagesRequest, messages: &[super::types::Message], mode
             .join("\n");
 
         if !system_content.is_empty() {
-            // 追加分块写入策略和身份覆盖到系统消息
-            let system_content = format!("{}\n{}{}", system_content, SYSTEM_CHUNKED_POLICY, SYSTEM_IDENTITY_OVERRIDE);
+            // 追加分块写入策略、身份覆盖和 JSON schema 指令到系统消息
+            let system_content = format!("{}\n{}{}{}", system_content, SYSTEM_CHUNKED_POLICY, SYSTEM_IDENTITY_OVERRIDE, schema_suffix);
 
             // 注入thinking标签到系统消息最前面（如果需要且不存在）
             let final_content = if let Some(ref prefix) = thinking_prefix {
@@ -726,7 +748,7 @@ fn build_history(req: &MessagesRequest, messages: &[super::types::Message], mode
         }
     } else if let Some(ref prefix) = thinking_prefix {
         // 没有系统消息但有thinking配置，插入新的系统消息（含身份覆盖）
-        let content = format!("{}{}", prefix, SYSTEM_IDENTITY_OVERRIDE);
+        let content = format!("{}{}{}", prefix, SYSTEM_IDENTITY_OVERRIDE, schema_suffix);
         let user_msg = HistoryUserMessage::new(content, model_id);
         history.push(Message::User(user_msg));
 
@@ -734,7 +756,8 @@ fn build_history(req: &MessagesRequest, messages: &[super::types::Message], mode
         history.push(Message::Assistant(assistant_msg));
     } else {
         // 没有系统消息也没有thinking，仍注入身份覆盖
-        let user_msg = HistoryUserMessage::new(SYSTEM_IDENTITY_OVERRIDE.trim().to_string(), model_id);
+        let content = format!("{}{}", SYSTEM_IDENTITY_OVERRIDE.trim(), schema_suffix);
+        let user_msg = HistoryUserMessage::new(content, model_id);
         history.push(Message::User(user_msg));
 
         let assistant_msg = HistoryAssistantMessage::new("I will follow these instructions.");

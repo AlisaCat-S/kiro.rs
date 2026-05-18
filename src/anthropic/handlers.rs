@@ -559,8 +559,6 @@ async fn handle_non_stream_request(
     let mut tool_uses: Vec<serde_json::Value> = Vec::new();
     let mut has_tool_use = false;
     let mut stop_reason = "end_turn".to_string();
-    // 从 contextUsageEvent 计算的实际输入 tokens
-    let mut context_input_tokens: Option<i32> = None;
 
     // 收集工具调用的增量 JSON
     let mut tool_json_buffers: std::collections::HashMap<String, String> =
@@ -619,7 +617,6 @@ async fn handle_non_stream_request(
                                 * (window_size as f64)
                                 / 100.0)
                                 as i32;
-                            context_input_tokens = Some(actual_input_tokens);
                             // 上下文使用量达到 100% 时，设置 stop_reason 为 model_context_window_exceeded
                             if context_usage.context_usage_percentage >= 100.0 {
                                 stop_reason = "model_context_window_exceeded".to_string();
@@ -683,33 +680,34 @@ async fn handle_non_stream_request(
     // 估算输出 tokens
     let output_tokens = token::estimate_output_tokens(&content);
 
-    // 使用从 contextUsageEvent 计算的 input_tokens，如果没有则使用估算值
-    let final_input_tokens = context_input_tokens.unwrap_or(input_tokens);
+    // 使用基于用户原始请求的估算值，不使用 contextUsageEvent 的值
+    // （contextUsageEvent 包含注入的 system prompt 的 token，会导致数值偏高）
+    let final_input_tokens = input_tokens;
 
-    // 构建 Anthropic 响应
+    // 构建 Anthropic 响应 - 使用有序 Map 确保 key 顺序与官方一致
     let msg_id = generate_msg_id();
-    let response_body = json!({
-        "id": &msg_id,
-        "type": "message",
-        "role": "assistant",
-        "content": content,
-        "model": model,
-        "stop_reason": stop_reason,
-        "stop_sequence": null,
-        "stop_details": null,
-        "usage": {
-            "input_tokens": final_input_tokens,
-            "output_tokens": output_tokens,
-            "cache_creation_input_tokens": 0,
-            "cache_read_input_tokens": 0,
-            "cache_creation": {
-                "ephemeral_1h_input_tokens": 0,
-                "ephemeral_5m_input_tokens": 0
-            },
-            "service_tier": "standard",
-            "inference_geo": "global"
-        }
-    });
+    let mut response_map = serde_json::Map::new();
+    response_map.insert("model".to_string(), json!(model));
+    response_map.insert("id".to_string(), json!(&msg_id));
+    response_map.insert("type".to_string(), json!("message"));
+    response_map.insert("role".to_string(), json!("assistant"));
+    response_map.insert("content".to_string(), json!(content));
+    response_map.insert("stop_reason".to_string(), json!(stop_reason));
+    response_map.insert("stop_sequence".to_string(), json!(null));
+    response_map.insert("stop_details".to_string(), json!(null));
+    response_map.insert("usage".to_string(), json!({
+        "input_tokens": final_input_tokens,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {
+            "ephemeral_5m_input_tokens": 0,
+            "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": output_tokens,
+        "service_tier": "standard",
+        "inference_geo": "global"
+    }));
+    let response_body = serde_json::Value::Object(response_map);
 
     build_anthropic_response(StatusCode::OK, &msg_id, Json(response_body).into_response())
 }
@@ -748,6 +746,7 @@ fn override_thinking_from_model_name(payload: &mut MessagesRequest) {
     if is_opus_4_6 {
         payload.output_config = Some(OutputConfig {
             effort: "high".to_string(),
+            format: None,
         });
     }
 }
