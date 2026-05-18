@@ -1,11 +1,6 @@
 name: Build Artifacts
 
 on:
-  push:
-    branches:
-      - master
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       version:
@@ -22,19 +17,9 @@ jobs:
     outputs:
       should_build: ${{ steps.check.outputs.should_build }}
     steps:
-      - uses: actions/checkout@v4
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/')
-        with:
-          fetch-depth: 0
-      - name: Check if commit has release tag
+      - name: Always build on manual dispatch
         id: check
-        run: |
-          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == refs/heads/* ]] && git tag --points-at HEAD | grep -q '^v'; then
-            echo "should_build=false" >> $GITHUB_OUTPUT
-            echo "::notice::Skipping beta build: commit already has a release tag"
-          else
-            echo "should_build=true" >> $GITHUB_OUTPUT
-          fi
+        run: echo "should_build=true" >> $GITHUB_OUTPUT
 
   build:
     needs: pre-check
@@ -75,17 +60,11 @@ jobs:
         id: version
         shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            INPUT_VERSION="${{ github.event.inputs.version }}"
-            if [ -z "${INPUT_VERSION}" ]; then
-              INPUT_VERSION="$(date +%Y.%-m.%-d)"
-            fi
-            echo "version=${INPUT_VERSION}" >> $GITHUB_OUTPUT
-          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
-          else
-            echo "version=$(date +%Y.%-m.%-d)" >> $GITHUB_OUTPUT
+          INPUT_VERSION="${{ github.event.inputs.version }}"
+          if [ -z "${INPUT_VERSION}" ]; then
+            INPUT_VERSION="$(date +%Y.%-m.%-d)"
           fi
+          echo "version=${INPUT_VERSION}" >> $GITHUB_OUTPUT
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
