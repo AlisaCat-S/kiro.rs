@@ -20,6 +20,7 @@ interface BatchImportDialogProps {
 
 interface CredentialInput {
   refreshToken?: string
+  accessToken?: string
   clientId?: string
   clientSecret?: string
   region?: string
@@ -179,14 +180,14 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
             continue
           }
         } else {
-          const token = cred.refreshToken?.trim() || ''
+          const token = (cred.refreshToken?.trim() || cred.accessToken?.trim() || '')
           if (!token) {
             setResults(prev => {
               const newResults = [...prev]
               newResults[i] = {
                 ...newResults[i],
                 status: 'failed',
-                error: '缺少 refreshToken',
+                error: '缺少 refreshToken 或 accessToken',
               }
               return newResults
             })
@@ -263,15 +264,10 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
           }
 
           // OAuth 凭据
-          const token = cred.refreshToken!.trim()
+          const token = (cred.refreshToken?.trim() || cred.accessToken?.trim())!
           const clientId = cred.clientId?.trim() || undefined
           const clientSecret = cred.clientSecret?.trim() || undefined
-          const authMethod = clientId && clientSecret ? 'idc' : 'social'
-
-          // idc 模式下必须同时提供 clientId 和 clientSecret
-          if (authMethod === 'social' && (clientId || clientSecret)) {
-            throw new Error('idc 模式需要同时提供 clientId 和 clientSecret')
-          }
+          const authMethod = (clientId && clientSecret) ? 'idc' : 'social'
 
           const addedCred = await addCredential({
             refreshToken: token,
@@ -422,7 +418,19 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
               JSON 格式凭据
             </label>
             <textarea
-              placeholder={'粘贴 JSON 格式的凭据（支持单个对象或数组）\n\nOAuth: [{"refreshToken":"...","clientId":"...","clientSecret":"..."}]\nAPI Key: [{"kiroApiKey":"ksk_xxx"}]\n\n支持 region 字段自动映射为 authRegion'}
+              placeholder={`粘贴 JSON 格式的凭据（支持单个对象或数组）
+
+示例 1 - OAuth social:
+[{"refreshToken":"aor...","clientId":"","clientSecret":""}]
+
+示例 2 - OAuth IDC:
+[{"refreshToken":"aor...","clientId":"xxx","clientSecret":"xxx"}]
+
+示例 3 - API Key:
+[{"kiroApiKey":"ksk_xxx"}]
+
+支持字段: refreshToken, accessToken, clientId, clientSecret, region, authRegion, apiRegion, priority, machineId, kiroApiKey, endpoint
+clientId/clientSecret 为空时自动识别为 social 模式`}
               value={jsonInput}
               onChange={(e) => setJsonInput(e.target.value)}
               disabled={importing}

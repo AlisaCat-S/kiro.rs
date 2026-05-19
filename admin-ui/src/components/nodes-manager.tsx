@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { toast } from 'sonner'
-import { Plus, Trash2, RefreshCw, Download, Upload, FlaskConical, Globe, Server, ArrowUpDown, Wallet, Power, Send, Activity, RotateCcw } from 'lucide-react'
+import { Plus, Trash2, RefreshCw, Download, Upload, FlaskConical, Globe, Server, ArrowUpDown, Wallet, Power, Send, Activity, RotateCcw, TimerReset } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -730,7 +730,8 @@ function NodeCard({
                   onClick={() => onResetAllSuccessCount(node)}
                   title="重置所有成功次数"
                 >
-                  <RotateCcw className="h-4 w-4" />
+                  <TimerReset className="h-4 w-4" />
+                  <span className="ml-1 text-xs">重置计数</span>
                 </Button>
                 {selectedIds.size > 0 && (
                   <Button
@@ -899,7 +900,7 @@ function NodeCard({
                               onClick={() => onResetSuccessCount(node, cred.id)}
                               title="重置成功次数"
                             >
-                              <RotateCcw className="h-3.5 w-3.5 text-muted-foreground" />
+                              <TimerReset className="h-3.5 w-3.5 text-muted-foreground" />
                             </Button>
                           )}
                           {cred.disabled && (
