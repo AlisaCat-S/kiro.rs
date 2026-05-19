@@ -361,6 +361,30 @@ fn process_message_content(
         }
         serde_json::Value::Array(arr) => {
             for item in arr {
+                let block_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+                if block_type == "document" {
+                    let mut doc_text = String::new();
+                    if let Some(title) = item.get("title").and_then(|v| v.as_str()) {
+                        doc_text.push_str(&format!("[Document: {}]\n", title));
+                    }
+                    if let Some(context) = item.get("context").and_then(|v| v.as_str()) {
+                        doc_text.push_str(&format!("{}\n", context));
+                    }
+                    if let Some(source) = item.get("source") {
+                        let source_type = source.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                        if source_type == "text" {
+                            if let Some(text) = source.get("text").and_then(|v| v.as_str()) {
+                                doc_text.push_str(text);
+                            }
+                        }
+                    }
+                    if !doc_text.is_empty() {
+                        text_parts.push(doc_text);
+                    }
+                    continue;
+                }
+
                 if let Ok(block) = serde_json::from_value::<ContentBlock>(item.clone()) {
                     match block.block_type.as_str() {
                         "text" => {
