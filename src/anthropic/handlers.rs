@@ -22,6 +22,7 @@ use tokio::time::interval;
 use uuid::Uuid;
 
 use super::converter::{ConversionError, convert_request};
+use super::image_fetch;
 use super::middleware::AppState;
 use super::stream::{BufferedStreamContext, SseEvent, StreamContext};
 use super::types::{CountTokensRequest, CountTokensResponse, ErrorResponse, MessagesRequest, Model, ModelsResponse, OutputConfig, Thinking};
@@ -299,6 +300,19 @@ pub async fn post_messages(
         ) as i32;
 
         return websearch::handle_websearch_request(provider, &payload, input_tokens).await;
+    }
+
+    // 预处理 URL 图片：下载并转换为 base64
+    if let Err(e) = image_fetch::resolve_url_images(&mut payload).await {
+        tracing::warn!("URL 图片处理失败: {}", e);
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(
+                "invalid_request_error",
+                format!("Could not process image: {}", e),
+            )),
+        )
+            .into_response();
     }
 
     // 转换请求
@@ -825,6 +839,19 @@ pub async fn post_messages_cc(
         ) as i32;
 
         return websearch::handle_websearch_request(provider, &payload, input_tokens).await;
+    }
+
+    // 预处理 URL 图片：下载并转换为 base64
+    if let Err(e) = image_fetch::resolve_url_images(&mut payload).await {
+        tracing::warn!("URL 图片处理失败: {}", e);
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(
+                "invalid_request_error",
+                format!("Could not process image: {}", e),
+            )),
+        )
+            .into_response();
     }
 
     // 转换请求

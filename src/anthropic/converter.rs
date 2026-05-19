@@ -370,8 +370,14 @@ fn process_message_content(
                         }
                         "image" => {
                             if let Some(source) = block.source {
-                                if let Some(format) = get_image_format(&source.media_type) {
-                                    images.push(KiroImage::from_base64(format, source.data));
+                                if source.source_type == "base64" {
+                                    if let (Some(media_type), Some(data)) =
+                                        (&source.media_type, source.data)
+                                    {
+                                        if let Some(format) = get_image_format(media_type) {
+                                            images.push(KiroImage::from_base64(format, data));
+                                        }
+                                    }
                                 }
                             }
                         }
