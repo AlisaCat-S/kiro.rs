@@ -177,10 +177,10 @@ docker-compose up
 | `region` | string | `us-east-1` | AWS 区域 |
 | `authRegion` | string | - | Auth Region（用于 Token 刷新），未配置时回退到 region |
 | `apiRegion` | string | - | API Region（用于 API 请求），未配置时回退到 region |
-| `kiroVersion` | string | `0.9.2` | Kiro 版本号 |
+| `kiroVersion` | string | `0.11.107` | Kiro 版本号 |
 | `machineId` | string | - | 自定义机器码（64位十六进制），不定义则自动生成 |
 | `systemVersion` | string | 随机 | 系统版本标识 |
-| `nodeVersion` | string | `22.21.1` | Node.js 版本标识 |
+| `nodeVersion` | string | `22.22.0` | Node.js 版本标识 |
 | `tlsBackend` | string | `rustls` | TLS 后端：`rustls` 或 `native-tls` |
 | `countTokensApiUrl` | string | - | 外部 count_tokens API 地址 |
 | `countTokensApiKey` | string | - | 外部 count_tokens API 密钥 |
@@ -192,6 +192,7 @@ docker-compose up
 | `loadBalancingMode` | string | `priority` | 负载均衡模式：`priority`（按优先级）或 `balanced`（均衡分配） |
 | `extractThinking` | boolean | `true` | 非流式响应的 thinking 块提取。启用后 `<thinking>` 标签会被解析为独立的 `thinking` 内容块 |
 | `defaultEndpoint` | string | `ide` | 默认 Kiro 端点。凭据未显式指定 `endpoint` 时使用。当前支持：`ide` |
+| `modelMapping` | object | `{}` | 模型映射覆盖。key 为输入模型名子串（大小写不敏感），value 为目标 Kiro 模型名。用于特殊情况覆盖自动版本解析 |
 
 完整配置示例：
 
@@ -435,12 +436,27 @@ RUST_LOG=debug ./target/release/kiro-rs
 
 ## 模型映射
 
-| Anthropic 模型 | Kiro 模型 |
-|----------------|-----------|
-| `*sonnet*` | `claude-sonnet-4.5` |
-| `*opus*`（含 4.5/4-5） | `claude-opus-4.5` |
-| `*opus*`（其他） | `claude-opus-4.6` |
-| `*haiku*` | `claude-haiku-4.5` |
+自动从模型名中提取 family 和版本号，`-` 转 `.` 构造 Kiro 模型名：
+
+| 输入示例 | 映射结果 | 规则 |
+|----------|----------|------|
+| `claude-opus-4-8-20260527` | `claude-opus-4.8` | 版本号自动提取 |
+| `claude-sonnet-4-6` | `claude-sonnet-4.6` | 版本号自动提取 |
+| `claude-3-5-sonnet-20241022` | `claude-sonnet-3.5` | 兼容旧格式 |
+| `claude-opus-4-20250514` | `claude-opus-4.6` | 无 minor 版本时 fallback |
+| `*haiku*` | `claude-haiku-4.5` | 所有 haiku fallback |
+
+**上下文窗口**：版本 >= 4.6 的模型自动使用 1M context，其余 200K。
+
+**自定义覆盖**：通过 `config.json` 的 `modelMapping` 字段可覆盖特定映射，无需重编译：
+
+```json
+{
+  "modelMapping": {
+    "my-custom-model": "claude-opus-4.8"
+  }
+}
+```
 
 ## Admin（可选）
 
