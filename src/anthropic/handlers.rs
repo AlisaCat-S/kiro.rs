@@ -11,7 +11,7 @@ use axum::{
     Json as JsonExtractor,
     body::Body,
     extract::State,
-    http::{StatusCode, header},
+    http::{StatusCode, header, HeaderValue},
     response::{IntoResponse, Json, Response},
 };
 use bytes::Bytes;
@@ -22,10 +22,68 @@ use tokio::time::interval;
 use uuid::Uuid;
 
 use super::converter::{ConversionError, convert_request};
+use super::image_fetch;
 use super::middleware::AppState;
 use super::stream::{BufferedStreamContext, SseEvent, StreamContext};
 use super::types::{CountTokensRequest, CountTokensResponse, ErrorResponse, MessagesRequest, Model, ModelsResponse, OutputConfig, Thinking};
 use super::websearch;
+
+const BASE62_CHARS: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
+/// 生成官方风格的消息 ID: msg_01 + 22 字符 base62
+pub fn generate_msg_id() -> String {
+    let uuid_bytes = Uuid::new_v4().into_bytes();
+    let mut id = String::with_capacity(28);
+    id.push_str("msg_01");
+    for &b in &uuid_bytes[..11] {
+        id.push(BASE62_CHARS[(b as usize) % 62] as char);
+        id.push(BASE62_CHARS[((b as usize) * 7 + 13) % 62] as char);
+    }
+    id
+}
+
+/// 生成官方风格的请求 ID: req_01 + 22 字符 base62
+pub fn generate_req_id() -> String {
+    let uuid_bytes = Uuid::new_v4().into_bytes();
+    let mut id = String::with_capacity(28);
+    id.push_str("req_01");
+    for &b in &uuid_bytes[..11] {
+        id.push(BASE62_CHARS[(b as usize) % 62] as char);
+        id.push(BASE62_CHARS[((b as usize) * 7 + 13) % 62] as char);
+    }
+    id
+}
+
+/// 将 Kiro 上游的 tooluse_xxx 格式转换为官方 toolu_01xxx 格式
+pub fn normalize_tool_use_id(id: &str) -> String {
+    if id.starts_with("tooluse_") {
+        format!("toolu_01{}", &id[8..])
+    } else if id.starts_with("toolu_") {
+        id.to_string()
+    } else {
+        format!("toolu_01{}", id)
+    }
+}
+
+/// 为响应注入 Anthropic 风格的 HTTP 头（Request-Id, Ratelimit 等）
+pub fn build_anthropic_response(_status: StatusCode, request_id: &str, mut response: Response) -> Response {
+    let headers = response.headers_mut();
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    headers.insert("request-id", HeaderValue::from_str(request_id).unwrap_or_else(|_| HeaderValue::from_static("req_unknown")));
+    headers.insert("anthropic-ratelimit-requests-limit", HeaderValue::from_static("1000"));
+    headers.insert("anthropic-ratelimit-requests-remaining", HeaderValue::from_static("999"));
+    headers.insert("anthropic-ratelimit-requests-reset", HeaderValue::from_str(&now).unwrap_or_else(|_| HeaderValue::from_static("2026-01-01T00:00:00Z")));
+    headers.insert("anthropic-ratelimit-input-tokens-limit", HeaderValue::from_static("80000"));
+    headers.insert("anthropic-ratelimit-input-tokens-remaining", HeaderValue::from_static("80000"));
+    headers.insert("anthropic-ratelimit-input-tokens-reset", HeaderValue::from_str(&now).unwrap_or_else(|_| HeaderValue::from_static("2026-01-01T00:00:00Z")));
+    headers.insert("anthropic-ratelimit-output-tokens-limit", HeaderValue::from_static("16000"));
+    headers.insert("anthropic-ratelimit-output-tokens-remaining", HeaderValue::from_static("16000"));
+    headers.insert("anthropic-ratelimit-output-tokens-reset", HeaderValue::from_str(&now).unwrap_or_else(|_| HeaderValue::from_static("2026-01-01T00:00:00Z")));
+    headers.insert("anthropic-ratelimit-tokens-limit", HeaderValue::from_static("96000"));
+    headers.insert("anthropic-ratelimit-tokens-remaining", HeaderValue::from_static("96000"));
+    headers.insert("anthropic-ratelimit-tokens-reset", HeaderValue::from_str(&now).unwrap_or_else(|_| HeaderValue::from_static("2026-01-01T00:00:00Z")));
+    response
+}
 
 /// 将 KiroProvider 错误映射为 HTTP 响应
 fn map_provider_error(err: Error) -> Response {
@@ -74,6 +132,42 @@ pub async fn get_models() -> impl IntoResponse {
     tracing::info!("Received GET /v1/models request");
 
     let models = vec![
+        Model {
+            id: "claude-opus-4-8".to_string(),
+            object: "model".to_string(),
+            created: 1779868800, // May 27, 2026
+            owned_by: "anthropic".to_string(),
+            display_name: "Claude Opus 4.8".to_string(),
+            model_type: "chat".to_string(),
+            max_tokens: 64000,
+        },
+        Model {
+            id: "claude-opus-4-8-thinking".to_string(),
+            object: "model".to_string(),
+            created: 1779868800, // May 27, 2026
+            owned_by: "anthropic".to_string(),
+            display_name: "Claude Opus 4.8 (Thinking)".to_string(),
+            model_type: "chat".to_string(),
+            max_tokens: 64000,
+        },
+        Model {
+            id: "claude-opus-4-7".to_string(),
+            object: "model".to_string(),
+            created: 1776276000, // Apr 16, 2026
+            owned_by: "anthropic".to_string(),
+            display_name: "Claude Opus 4.7".to_string(),
+            model_type: "chat".to_string(),
+            max_tokens: 64000,
+        },
+        Model {
+            id: "claude-opus-4-7-thinking".to_string(),
+            object: "model".to_string(),
+            created: 1776276000, // Apr 16, 2026
+            owned_by: "anthropic".to_string(),
+            display_name: "Claude Opus 4.7 (Thinking)".to_string(),
+            model_type: "chat".to_string(),
+            max_tokens: 64000,
+        },
         Model {
             id: "claude-opus-4-6".to_string(),
             object: "model".to_string(),
@@ -166,9 +260,15 @@ pub async fn get_models() -> impl IntoResponse {
         },
     ];
 
+    let first_id = models.first().map(|m| m.id.clone());
+    let last_id = models.last().map(|m| m.id.clone());
+
     Json(ModelsResponse {
         object: "list".to_string(),
         data: models,
+        first_id,
+        last_id,
+        has_more: false,
     })
 }
 
@@ -179,6 +279,12 @@ pub async fn post_messages(
     State(state): State<AppState>,
     JsonExtractor(mut payload): JsonExtractor<MessagesRequest>,
 ) -> Response {
+    // 应用 config 中的模型映射覆盖
+    if let Some(override_model) = state.resolve_model_override(&payload.model) {
+        tracing::info!(original = %payload.model, mapped = %override_model, "应用 config modelMapping 覆盖");
+        payload.model = override_model.to_string();
+    }
+
     tracing::info!(
         model = %payload.model,
         max_tokens = %payload.max_tokens,
@@ -218,6 +324,19 @@ pub async fn post_messages(
         ) as i32;
 
         return websearch::handle_websearch_request(provider, &payload, input_tokens).await;
+    }
+
+    // 预处理 URL 图片：下载并转换为 base64
+    if let Err(e) = image_fetch::resolve_url_images(&mut payload).await {
+        tracing::warn!("URL 图片处理失败: {}", e);
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(
+                "invalid_request_error",
+                format!("Could not process image: {}", e),
+            )),
+        )
+            .into_response();
     }
 
     // 转换请求
@@ -324,13 +443,15 @@ async fn handle_stream_request(
     let stream = create_sse_stream(response, ctx, initial_events);
 
     // 返回 SSE 响应
-    Response::builder()
+    let request_id = generate_req_id();
+    let sse_response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/event-stream")
         .header(header::CACHE_CONTROL, "no-cache")
         .header(header::CONNECTION, "keep-alive")
         .body(Body::from_stream(stream))
-        .unwrap()
+        .unwrap();
+    build_anthropic_response(StatusCode::OK, &request_id, sse_response)
 }
 
 /// Ping 事件间隔（25秒）
@@ -476,7 +597,6 @@ async fn handle_non_stream_request(
     let mut tool_uses: Vec<serde_json::Value> = Vec::new();
     let mut has_tool_use = false;
     let mut stop_reason = "end_turn".to_string();
-    // 从 contextUsageEvent 计算的实际输入 tokens
     let mut context_input_tokens: Option<i32> = None;
 
     // 收集工具调用的增量 JSON
@@ -522,9 +642,10 @@ async fn handle_non_stream_request(
 
                                 tool_uses.push(json!({
                                     "type": "tool_use",
-                                    "id": tool_use.tool_use_id,
+                                    "id": normalize_tool_use_id(&tool_use.tool_use_id),
                                     "name": original_name,
-                                    "input": input
+                                    "input": input,
+                                    "caller": {"type": "direct"}
                                 }));
                             }
                         }
@@ -602,22 +723,32 @@ async fn handle_non_stream_request(
     // 使用从 contextUsageEvent 计算的 input_tokens，如果没有则使用估算值
     let final_input_tokens = context_input_tokens.unwrap_or(input_tokens);
 
-    // 构建 Anthropic 响应
-    let response_body = json!({
-        "id": format!("msg_{}", Uuid::new_v4().to_string().replace('-', "")),
-        "type": "message",
-        "role": "assistant",
-        "content": content,
-        "model": model,
-        "stop_reason": stop_reason,
-        "stop_sequence": null,
-        "usage": {
-            "input_tokens": final_input_tokens,
-            "output_tokens": output_tokens
-        }
-    });
+    // 构建 Anthropic 响应 - 使用有序 Map 确保 key 顺序与官方一致
+    let msg_id = generate_msg_id();
+    let mut response_map = serde_json::Map::new();
+    response_map.insert("model".to_string(), json!(model));
+    response_map.insert("id".to_string(), json!(&msg_id));
+    response_map.insert("type".to_string(), json!("message"));
+    response_map.insert("role".to_string(), json!("assistant"));
+    response_map.insert("content".to_string(), json!(content));
+    response_map.insert("stop_reason".to_string(), json!(stop_reason));
+    response_map.insert("stop_sequence".to_string(), json!(null));
+    response_map.insert("stop_details".to_string(), json!(null));
+    response_map.insert("usage".to_string(), json!({
+        "input_tokens": final_input_tokens,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {
+            "ephemeral_5m_input_tokens": 0,
+            "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": output_tokens,
+        "service_tier": "standard",
+        "inference_geo": "global"
+    }));
+    let response_body = serde_json::Value::Object(response_map);
 
-    (StatusCode::OK, Json(response_body)).into_response()
+    build_anthropic_response(StatusCode::OK, &msg_id, Json(response_body).into_response())
 }
 
 /// 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
@@ -654,6 +785,7 @@ fn override_thinking_from_model_name(payload: &mut MessagesRequest) {
     if is_opus_4_6 {
         payload.output_config = Some(OutputConfig {
             effort: "high".to_string(),
+            format: None,
         });
     }
 }
@@ -691,6 +823,12 @@ pub async fn post_messages_cc(
     State(state): State<AppState>,
     JsonExtractor(mut payload): JsonExtractor<MessagesRequest>,
 ) -> Response {
+    // 应用 config 中的模型映射覆盖
+    if let Some(override_model) = state.resolve_model_override(&payload.model) {
+        tracing::info!(original = %payload.model, mapped = %override_model, "应用 config modelMapping 覆盖");
+        payload.model = override_model.to_string();
+    }
+
     tracing::info!(
         model = %payload.model,
         max_tokens = %payload.max_tokens,
@@ -731,6 +869,19 @@ pub async fn post_messages_cc(
         ) as i32;
 
         return websearch::handle_websearch_request(provider, &payload, input_tokens).await;
+    }
+
+    // 预处理 URL 图片：下载并转换为 base64
+    if let Err(e) = image_fetch::resolve_url_images(&mut payload).await {
+        tracing::warn!("URL 图片处理失败: {}", e);
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(
+                "invalid_request_error",
+                format!("Could not process image: {}", e),
+            )),
+        )
+            .into_response();
     }
 
     // 转换请求
@@ -837,13 +988,15 @@ async fn handle_stream_request_buffered(
     let stream = create_buffered_sse_stream(response, ctx);
 
     // 返回 SSE 响应
-    Response::builder()
+    let request_id = generate_req_id();
+    let sse_response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/event-stream")
         .header(header::CACHE_CONTROL, "no-cache")
         .header(header::CONNECTION, "keep-alive")
         .body(Body::from_stream(stream))
-        .unwrap()
+        .unwrap();
+    build_anthropic_response(StatusCode::OK, &request_id, sse_response)
 }
 
 /// 创建缓冲 SSE 事件流

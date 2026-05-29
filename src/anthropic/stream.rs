@@ -5,7 +5,6 @@
 use std::collections::HashMap;
 
 use serde_json::json;
-use uuid::Uuid;
 
 use crate::kiro::model::events::Event;
 
@@ -484,11 +483,17 @@ impl SseStateManager {
                     "type": "message_delta",
                     "delta": {
                         "stop_reason": self.get_stop_reason(),
-                        "stop_sequence": null
+                        "stop_sequence": null,
+                        "stop_details": null
                     },
                     "usage": {
                         "input_tokens": input_tokens,
-                        "output_tokens": output_tokens
+                        "output_tokens": output_tokens,
+                        "cache_creation_input_tokens": 0,
+                        "cache_read_input_tokens": 0
+                    },
+                    "context_management": {
+                        "applied_edits": []
                     }
                 }),
             ));
@@ -555,7 +560,7 @@ impl StreamContext {
         Self {
             state_manager: SseStateManager::new(),
             model: model.into(),
-            message_id: format!("msg_{}", Uuid::new_v4().to_string().replace('-', "")),
+            message_id: super::handlers::generate_msg_id(),
             input_tokens,
             context_input_tokens: None,
             output_tokens: 0,
@@ -573,22 +578,34 @@ impl StreamContext {
 
     /// 生成 message_start 事件
     pub fn create_message_start_event(&self) -> serde_json::Value {
-        json!({
-            "type": "message_start",
-            "message": {
-                "id": self.message_id,
-                "type": "message",
-                "role": "assistant",
-                "content": [],
-                "model": self.model,
-                "stop_reason": null,
-                "stop_sequence": null,
-                "usage": {
-                    "input_tokens": self.input_tokens,
-                    "output_tokens": 1
-                }
-            }
-        })
+        // 使用有序 Map 确保 key 顺序与官方一致
+        let mut message = serde_json::Map::new();
+        message.insert("model".to_string(), json!(self.model));
+        message.insert("id".to_string(), json!(self.message_id));
+        message.insert("type".to_string(), json!("message"));
+        message.insert("role".to_string(), json!("assistant"));
+        message.insert("content".to_string(), json!([]));
+        message.insert("stop_reason".to_string(), json!(null));
+        message.insert("stop_sequence".to_string(), json!(null));
+        message.insert("stop_details".to_string(), json!(null));
+
+        let mut usage = serde_json::Map::new();
+        usage.insert("input_tokens".to_string(), json!(self.input_tokens));
+        usage.insert("cache_creation_input_tokens".to_string(), json!(0));
+        usage.insert("cache_read_input_tokens".to_string(), json!(0));
+        let mut cache_creation = serde_json::Map::new();
+        cache_creation.insert("ephemeral_5m_input_tokens".to_string(), json!(0));
+        cache_creation.insert("ephemeral_1h_input_tokens".to_string(), json!(0));
+        usage.insert("cache_creation".to_string(), serde_json::Value::Object(cache_creation));
+        usage.insert("output_tokens".to_string(), json!(1));
+        usage.insert("service_tier".to_string(), json!("standard"));
+        usage.insert("inference_geo".to_string(), json!("global"));
+        message.insert("usage".to_string(), serde_json::Value::Object(usage));
+
+        let mut event = serde_json::Map::new();
+        event.insert("type".to_string(), json!("message_start"));
+        event.insert("message".to_string(), serde_json::Value::Object(message));
+        serde_json::Value::Object(event)
     }
 
     /// 生成初始事件序列 (message_start + 文本块 start)
@@ -1003,9 +1020,10 @@ impl StreamContext {
                 "index": block_index,
                 "content_block": {
                     "type": "tool_use",
-                    "id": tool_use.tool_use_id,
+                    "id": super::handlers::normalize_tool_use_id(&tool_use.tool_use_id),
                     "name": original_name,
-                    "input": {}
+                    "input": {},
+                    "caller": {"type": "direct"}
                 }
             }),
         );
@@ -1202,7 +1220,7 @@ impl BufferedStreamContext {
         let final_events = self.inner.generate_final_events();
         self.event_buffer.extend(final_events);
 
-        // 获取正确的 input_tokens
+        // 使用从 contextUsageEvent 计算的 input_tokens，如果没有则使用估算值
         let final_input_tokens = self
             .inner
             .context_input_tokens

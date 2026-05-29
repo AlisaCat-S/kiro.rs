@@ -1,17 +1,12 @@
 name: Build Artifacts
 
 on:
-  push:
-    branches:
-      - master
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version label for artifacts (e.g., 2025.12.1)'
-        required: true
-        default: '2026.1.1'
+        description: 'Version label (leave empty to use current date, e.g., 2026.5.18)'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -22,19 +17,9 @@ jobs:
     outputs:
       should_build: ${{ steps.check.outputs.should_build }}
     steps:
-      - uses: actions/checkout@v4
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/')
-        with:
-          fetch-depth: 0
-      - name: Check if commit has release tag
+      - name: Always build on manual dispatch
         id: check
-        run: |
-          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == refs/heads/* ]] && git tag --points-at HEAD | grep -q '^v'; then
-            echo "should_build=false" >> $GITHUB_OUTPUT
-            echo "::notice::Skipping beta build: commit already has a release tag"
-          else
-            echo "should_build=true" >> $GITHUB_OUTPUT
-          fi
+        run: echo "should_build=true" >> $GITHUB_OUTPUT
 
   build:
     needs: pre-check
@@ -75,28 +60,25 @@ jobs:
         id: version
         shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
-          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
-          else
-            SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-6)
-            echo "version=beta-${SHORT_SHA}" >> $GITHUB_OUTPUT
+          INPUT_VERSION="${{ github.event.inputs.version }}"
+          if [ -z "${INPUT_VERSION}" ]; then
+            INPUT_VERSION="$(date +%Y.%-m.%-d)"
           fi
+          echo "version=${INPUT_VERSION}" >> $GITHUB_OUTPUT
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 10
 
       - name: Install admin-ui dependencies
         working-directory: admin-ui
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Build admin-ui
         working-directory: admin-ui
@@ -118,6 +100,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y musl-tools
+
+      - name: Set version in Cargo.toml
+        shell: bash
+        run: sed -i "s/^version = .*/version = \"${{ steps.version.outputs.version }}\"/" Cargo.toml
 
       - name: Build app
         run: cargo build --release --target ${{ matrix.target }} ${{ contains(matrix.target, 'musl') && '--no-default-features' || '' }}

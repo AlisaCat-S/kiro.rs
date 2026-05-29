@@ -10,10 +10,12 @@ RUN pnpm build
 
 FROM rust:1.92-alpine AS builder
 
+ARG APP_VERSION=0.0.0
 RUN apk add --no-cache musl-dev perl make
 
 WORKDIR /app
 COPY Cargo.toml Cargo.lock* ./
+RUN sed -i "s/^version = .*/version = \"${APP_VERSION}\"/" Cargo.toml
 COPY src ./src
 COPY --from=frontend-builder /app/admin-ui/dist /app/admin-ui/dist
 

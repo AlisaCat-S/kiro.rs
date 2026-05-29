@@ -157,9 +157,18 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
                 <Input
                   id="refreshToken"
                   type="password"
-                  placeholder="请输入 Refresh Token"
+                  placeholder="请输入 Refresh Token（输入 ksk_ 开头自动切换为 API Key 模式）"
                   value={refreshToken}
-                  onChange={(e) => setRefreshToken(e.target.value)}
+                  onChange={(e) => {
+                    const val = e.target.value
+                    if (val.startsWith('ksk_')) {
+                      setAuthMethod('api_key')
+                      setKiroApiKey(val)
+                      setRefreshToken('')
+                    } else {
+                      setRefreshToken(val)
+                    }
+                  }}
                   disabled={isPending}
                 />
               </div>

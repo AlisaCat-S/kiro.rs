@@ -24,6 +24,7 @@
 
 mod converter;
 mod handlers;
+pub mod image_fetch;
 mod middleware;
 mod router;
 mod stream;

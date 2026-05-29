@@ -56,6 +56,11 @@ pub struct Model {
 pub struct ModelsResponse {
     pub object: String,
     pub data: Vec<Model>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_id: Option<String>,
+    pub has_more: bool,
 }
 
 // === Messages 端点类型 ===
@@ -98,6 +103,22 @@ where
 pub struct OutputConfig {
     #[serde(default = "default_effort")]
     pub effort: String,
+    /// 结构化输出格式配置
+    pub format: Option<OutputFormat>,
+}
+
+/// 输出格式配置
+#[derive(Debug, Deserialize, Clone)]
+#[serde(tag = "type")]
+pub enum OutputFormat {
+    /// JSON Schema 结构化输出
+    #[serde(rename = "json_schema")]
+    JsonSchema {
+        schema: serde_json::Value,
+    },
+    /// 纯文本
+    #[serde(rename = "text")]
+    Text {},
 }
 
 fn default_effort() -> String {
@@ -250,13 +271,17 @@ pub struct ContentBlock {
     pub source: Option<ImageSource>,
 }
 
-/// 图片数据源
+/// 图片数据源（支持 base64 和 url 两种类型）
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ImageSource {
     #[serde(rename = "type")]
     pub source_type: String,
-    pub media_type: String,
-    pub data: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 // === Count Tokens 端点类型 ===

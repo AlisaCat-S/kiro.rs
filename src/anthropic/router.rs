@@ -1,5 +1,7 @@
 //! Anthropic API 路由配置
 
+use std::collections::HashMap;
+
 use axum::{
     Router,
     extract::DefaultBodyLimit,
@@ -38,10 +40,14 @@ pub fn create_router_with_provider(
     api_key: impl Into<String>,
     kiro_provider: Option<KiroProvider>,
     extract_thinking: bool,
+    model_mapping: HashMap<String, String>,
 ) -> Router {
     let mut state = AppState::new(api_key, extract_thinking);
     if let Some(provider) = kiro_provider {
         state = state.with_kiro_provider(provider);
+    }
+    if !model_mapping.is_empty() {
+        state = state.with_model_mapping(model_mapping);
     }
 
     // 需要认证的 /v1 路由
