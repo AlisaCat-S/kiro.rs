@@ -1,5 +1,6 @@
 //! Anthropic API 中间件
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::{
@@ -25,6 +26,8 @@ pub struct AppState {
     pub kiro_provider: Option<Arc<KiroProvider>>,
     /// 是否开启非流式响应的 thinking 块提取
     pub extract_thinking: bool,
+    /// 模型映射覆盖（key: 输入模型名子串，value: Kiro 模型名）
+    pub model_mapping: HashMap<String, String>,
 }
 
 impl AppState {
@@ -34,6 +37,7 @@ impl AppState {
             api_key: api_key.into(),
             kiro_provider: None,
             extract_thinking,
+            model_mapping: HashMap::new(),
         }
     }
 
@@ -41,6 +45,23 @@ impl AppState {
     pub fn with_kiro_provider(mut self, provider: KiroProvider) -> Self {
         self.kiro_provider = Some(Arc::new(provider));
         self
+    }
+
+    /// 设置模型映射覆盖
+    pub fn with_model_mapping(mut self, mapping: HashMap<String, String>) -> Self {
+        self.model_mapping = mapping;
+        self
+    }
+
+    /// 应用模型映射覆盖：如果输入模型名匹配某个 key，返回对应的 Kiro 模型名
+    pub fn resolve_model_override(&self, model: &str) -> Option<&str> {
+        let model_lower = model.to_lowercase();
+        for (pattern, target) in &self.model_mapping {
+            if model_lower.contains(&pattern.to_lowercase()) {
+                return Some(target.as_str());
+            }
+        }
+        None
     }
 }
 

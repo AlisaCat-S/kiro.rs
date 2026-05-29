@@ -102,6 +102,12 @@ pub struct Config {
     #[serde(default = "default_endpoint")]
     pub default_endpoint: String,
 
+    /// 模型映射覆盖（可选）
+    /// key: 输入模型名的子串匹配（小写），value: 目标 Kiro 模型名
+    /// 示例: {"opus-4-9": "claude-opus-4.9", "my-custom": "claude-sonnet-4.6"}
+    #[serde(default)]
+    pub model_mapping: HashMap<String, String>,
+
     /// 端点特定的配置
     ///
     /// 键为端点名（如 "ide" / "cli"），值为该端点自由定义的参数对象。
@@ -183,6 +189,7 @@ impl Default for Config {
             load_balancing_mode: default_load_balancing_mode(),
             extract_thinking: default_extract_thinking(),
             default_endpoint: default_endpoint(),
+            model_mapping: HashMap::new(),
             endpoints: HashMap::new(),
             config_path: None,
         }

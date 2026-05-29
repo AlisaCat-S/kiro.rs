@@ -163,6 +163,7 @@ async fn main() {
         &api_key,
         Some(kiro_provider),
         config.extract_thinking,
+        config.model_mapping.clone(),
     );
 
     // 构建 Admin API 路由（如果配置了非空的 admin_api_key）

@@ -484,11 +484,14 @@ kiro-rs/
 │   │   ├── types.rs            # 类型定义
 │   │   ├── converter.rs        # 协议转换器
 │   │   ├── stream.rs           # 流式响应处理
+│   │   ├── image_fetch.rs      # URL 图片下载（含 SSRF 防护）
 │   │   └── websearch.rs        # WebSearch 工具处理
 │   ├── kiro/                   # Kiro API 客户端
 │   │   ├── provider.rs         # API 提供者
 │   │   ├── token_manager.rs    # Token 管理
 │   │   ├── machine_id.rs       # 设备指纹生成
+│   │   ├── endpoint/           # 端点抽象层
+│   │   │   └── ide.rs          # IDE 端点实现
 │   │   ├── model/              # 数据模型
 │   │   │   ├── credentials.rs  # OAuth 凭证
 │   │   │   ├── events/         # 响应事件类型
