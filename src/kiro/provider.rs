@@ -23,7 +23,7 @@ use parking_lot::Mutex;
 const MAX_RETRIES_PER_CREDENTIAL: usize = 3;
 
 /// 总重试次数硬上限（避免无限重试）
-const MAX_TOTAL_RETRIES: usize = 9;
+const MAX_TOTAL_RETRIES: usize = 3;
 
 /// Kiro API Provider
 ///
